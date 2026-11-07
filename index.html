@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Wael · ML engineer & AI-agent builder · a playable portfolio</title>
+    <meta name="description" content="Wael: ML engineer and AI-agent builder competing on Kaggle and Zindi. Explore a small pixel-art underground to find his projects, or skip straight to the résumé." />
+    <link rel="canonical" href="https://waelytz.github.io/" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="color-scheme" content="dark" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Wael · a playable portfolio" />
+    <meta property="og:description" content="ML engineer & AI-agent builder. Explore the underground, or skip to the résumé." />
+    <meta property="og:url" content="https://waelytz.github.io/" />
+    <meta property="og:image" content="https://waelytz.github.io/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!--JSONLD-->
+  </head>
+  <body>
+    <div id="app">
+      <header id="bar">
+        <a id="skip" class="ui-btn" href="/resume/" data-px="SKIP → RÉSUMÉ">Skip → résumé</a>
+        <button id="mute" class="ui-btn" type="button" aria-pressed="true" data-px="♪ OFF">Sound: off</button>
+      </header>
+      <main id="stage" aria-label="Wael's portfolio game. Arrow keys or WASD to move, Z or Enter to interact, X or Shift to cancel, C for the menu.">
+        <!--INTRO-->
+      </main>
+      <div id="touch" aria-hidden="true">
+        <div id="dpad">
+          <span data-dir="up" class="d up"></span><span data-dir="left" class="d left"></span>
+          <span data-dir="right" class="d right"></span><span data-dir="down" class="d down"></span>
+        </div>
+        <div id="abtns">
+          <span data-btn="menu" class="b small" data-px="C">C</span>
+          <span data-btn="cancel" class="b" data-px="X">X</span>
+          <span data-btn="confirm" class="b big" data-px="Z">Z</span>
+        </div>
+      </div>
+      <div id="sr-live" class="sr" aria-live="polite"></div>
+      <input id="typebox" type="text" maxlength="80" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" aria-label="Ask the mirror a question" />
+    </div>
+    <noscript><!--NOSCRIPT--></noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

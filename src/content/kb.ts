@@ -1,0 +1,83 @@
+// The Mirror's knowledge base: questions Wael answers in his own voice. Facts only (from the repos and the profile).
+import { EMAIL_OBFUSCATED } from './profile';
+
+export interface KBEntry {
+  id: string;
+  label: string; // shown as a suggested question
+  q: string[]; // phrasings / keywords to match
+  a: string[]; // answer, one dialog page per line
+  f?: string[]; // follow-up suggestions (entry ids)
+  secret?: string;
+}
+
+export const KB: KBEntry[] = [
+  { id: 'about', label: 'Who are you?', q: ['who are you', 'tell me about yourself', 'introduce yourself', 'who is wael', 'about you', 'what do you do', 'wael'],
+    a: ["I'm Wael, an ML engineer and AI-agent builder.", 'I build forecasting models and multi-agent LLM systems, and I compete on Kaggle and Zindi.'], f: ['projects', 'skills', 'hire'] },
+  { id: 'projects', label: 'What have you built?', q: ['what have you built', 'projects', 'show me your projects', 'portfolio', 'your work', 'what did you make'],
+    a: ['A few I am proud of: TrafficFlowBench (causal traffic forecasting), the Refactoring Swarm (agents that fix code), and One Road Out (a bias I found for Zindi).',
+      'Also VEC Leaderboard Insights, a QLoRA fine-tune of Qwen 2.5 3B, ML algorithms from scratch, and a hackathon frontend.'], f: ['tfb', 'swarm', 'road'] },
+  { id: 'tfb', label: 'What is TrafficFlowBench?', q: ['trafficflowbench', 'traffic flow bench', 'traffic', 'ieee big data cup', 'big data cup', 'queue forecasting', 'freeway', 'ieee'],
+    a: ['TrafficFlowBench was the 2026 IEEE Big Data Cup, on Kaggle: ten freeway corridors, four tasks.',
+      'Rebuild blanked traffic states, forecast queues 30 minutes ahead, respect traffic physics, and recover origin-destination demand.'], f: ['causal', 'tfbmethod', 'competitions'] },
+  { id: 'causal', label: 'What does "strictly causal" mean?', q: ['causal', 'strictly causal', 'causal forecasting', 'data leakage', 'leakage', 'deletion test', 'post t', 'future data'],
+    a: ['Every input is stamped at or before the forecast time T. Nothing from the future sneaks in.',
+      "To prove it, I wrote a deletion test: blank every cell after T, rebuild the inputs and the predictions, and check they are bit-identical. A negative control shows the test catches leaks."], f: ['tfbmethod', 'skills'] },
+  { id: 'tfbmethod', label: 'Which models did you use?', q: ['which models', 'models did you use', 'method', 'xgboost', 'cnn', 'how did you model', 'architecture', 'lightgbm', 'catboost'],
+    a: ['For the traffic states: an XGBoost residual model plus an ensemble of 14 small 2-D convolutional imputers.',
+      'For the queues: a space-time CNN for ongoing queues, and a LightGBM + CatBoost onset blend with a memory of earlier days. For demand: non-negative ridge regression.'], f: ['causal', 'projects'] },
+  { id: 'swarm', label: 'What is the Refactoring Swarm?', q: ['refactoring swarm', 'swarm', 'multi agent', 'multi-agent', 'agents', 'langgraph', 'refactoring', 'ai agents', 'llm agents', 'agent'],
+    a: ['A relay of three LLM agents that fixes Python code. The Auditor finds issues with Pylint and an LLM, the Fixer rewrites the code with Gemini, and the Judge writes and runs pytest tests.',
+      'When a test fails, the error goes back to the Fixer: a self-healing loop, built as a LangGraph state graph. It was a team project.'], f: ['skills', 'projects'] },
+  { id: 'road', label: 'What did you find for Zindi?', q: ['one road out', 'bias bounty', 'zindi', '2.88m', 'road network', 'roads', 'wildfire', 'mapping equity', 'bias', 'resist'],
+    a: ["The challenge's road layer drops service and pedestrian roads. In what is left, 2.88M residents live in pockets behind a single road link.",
+      'In the highest wildfire-hazard areas, some of those pockets do have a second exit... in exactly the roads the filter dropped. I checked it against OpenStreetMap and the FHWA road inventory, and one script re-checks all 107 numbers.'], f: ['competitions', 'projects'] },
+  { id: 'vec', label: 'What is VEC Leaderboard Insights?', q: ['vec', 'virtual embryo', 'neurips', 'leaderboard insights', 'embryo', 'dashboard'],
+    a: ['A small, dependency-free tool for the NeurIPS 2026 Virtual Embryo Challenge.',
+      'It reads the public leaderboard and tells participants which metric to improve next, with a live dashboard and daily anonymised snapshots.'], f: ['competitions', 'projects'] },
+  { id: 'qlora', label: 'Have you fine-tuned LLMs?', q: ['llm fine tune', 'fine tune', 'fine-tune', 'finetune', 'qlora', 'qwen', 'fine tuning', 'lora', 'llm', 'hugging face'],
+    a: ['Yes. With a teammate at llm-lab-dz, I fine-tuned Qwen 2.5 3B Instruct with QLoRA on a cleaned UltraChat set.',
+      '4-bit NF4 quantisation, a rank-16 LoRA adapter on a single GPU, and checkpoints pushed to the Hugging Face Hub.'], f: ['swarm', 'skills'] },
+  { id: 'mlscratch', label: 'ML from scratch?', q: ['from scratch', 'ml algorithms', 'gradient descent', 'linear regression', 'logistic regression', 'decision tree', 'random forest'],
+    a: ['I implemented the basics myself: linear regression with gradient descent, logistic regression, decision trees and random forests.',
+      'The ball in the bowl, in the ruins, is the same idea: look at the slope, step downhill, repeat.'], f: ['skills', 'projects'] },
+  { id: 'apcs', label: 'Do you do web dev?', q: ['apcs', 'microhack', 'hackathon', 'frontend', 'nextjs', 'next js', 'react', 'web', 'typescript', 'web dev'],
+    a: ['Some. For the MicroHack hackathon, my team built a Next.js + TypeScript app where carriers book container-terminal appointments, with admin, operator and carrier portals.',
+      'And this underground runs on TypeScript too.'], f: ['site', 'projects'] },
+  { id: 'competitions', label: 'Which competitions?', q: ['competitions', 'competition', 'kaggle', 'competing', 'contests', 'challenges'],
+    a: ['This year: the IEEE Big Data Cup 2026 (TrafficFlowBench, on Kaggle), the Zindi Bias Bounty (Mapping Equity), and the NeurIPS 2026 Virtual Embryo Challenge.',
+      'Their trophies are in the Hall of Records, north of the entrance.'], f: ['tfb', 'road', 'vec'] },
+  { id: 'skills', label: 'What is your stack?', q: ['skills', 'stack', 'tech stack', 'tools', 'languages', 'what do you use', 'technologies', 'python', 'pytorch'],
+    a: ['Mostly Python: PyTorch, XGBoost, LightGBM, CatBoost, scikit-learn, pandas and NumPy.',
+      'For agents: LangGraph and LangChain with Gemini. For LLMs: Transformers, PEFT and QLoRA. TypeScript for the web. Lumen sells all of it, by the way.'], f: ['projects', 'hire'] },
+  { id: 'hire', label: 'Are you open to work together?', q: ['available', 'availability', 'hire', 'hiring', 'work together', 'collaborate', 'collaboration', 'job', 'open to work', 'freelance', 'opportunity'],
+    a: ["I'm open to collaborations on machine learning, AI agents and data competitions.", 'The quickest way to reach me is email or LinkedIn.'], f: ['contact', 'projects'] },
+  { id: 'contact', label: 'How do I contact you?', q: ['contact', 'email', 'mail', 'how to reach you', 'reach you', 'linkedin', 'get in touch', 'reach out', 'phone'],
+    a: [`Email: ${EMAIL_OBFUSCATED}`, 'LinkedIn: zitouni-ouailimadeddine. GitHub: WaelYTz. Kaggle: waelyt. The room behind the exit door has signs for all of them.'], f: ['hire', 'resume'] },
+  { id: 'github', label: 'Where is your code?', q: ['github', 'code', 'repositories', 'repos', 'source code', 'open source'],
+    a: ['On GitHub, as WaelYTz. My profile README is a small game too: you can FIGHT or show MERCY there.'], f: ['projects', 'site'] },
+  { id: 'resume', label: 'Is there a résumé?', q: ['resume', 'cv', 'curriculum', 'résumé', 'pdf'],
+    a: ["Yes: a plain, printable résumé at /resume. It's the 'Skip → résumé' link at the top of the page."], f: ['contact', 'projects'] },
+  { id: 'techno', label: 'Why the crown?', q: ['technoblade', 'techno', 'crown', 'blood god', 'never dies'],
+    a: ['Technoblade never dies.', 'There is a quiet room for him, west of the entrance. Take a moment there.'], f: ['artofwar', 'about'] },
+  { id: 'artofwar', label: 'A favourite quote?', q: ['sun tzu', 'art of war', 'quote', 'favorite quote', 'favourite quote', 'philosophy'],
+    a: ['"If you know the enemy and know yourself, you need not fear the result of a hundred battles." Sun Tzu, in Lionel Giles\' 1910 translation.',
+      'For me it means: know the metric, know your validation set.'], f: ['techno', 'causal'] },
+  { id: 'site', label: 'How was this place built?', q: ['how was this built', 'this site', 'this website', 'how did you make this', 'phaser', 'game', 'this portfolio', 'built with'],
+    a: ['Vite, TypeScript and Phaser 3, hosted for free on GitHub Pages.', 'Every sprite is drawn from code and every note is synthesized. Even I am just fuzzy search over a small local knowledge base.'], f: ['mirror', 'github'] },
+  { id: 'mirror', label: 'Are you an AI?', q: ['are you an ai', 'are you real', 'chatgpt', 'gpt', 'are you a bot', 'what are you', 'mirror'],
+    a: ["I'm a mirror, not a model. I match your question against answers Wael wrote, with no network and no LLM.", 'The code is ready for a real model to be plugged in someday.'], f: ['site', 'about'] },
+  { id: 'hello', label: 'Hi!', q: ['hi', 'hello', 'hey', 'yo', 'salam', 'good morning', 'good evening'],
+    a: ['Hi, {name}! Ask me about my projects, my stack, competitions, or how to reach me.'], f: ['about', 'projects', 'contact'] },
+  { id: 'thanks', label: 'Thanks!', q: ['thanks', 'thank you', 'cool', 'nice', 'awesome', 'great', 'love it'],
+    a: ['Thank you for walking all the way down here, {name}.'], f: ['hire', 'contact'] },
+  { id: 'soul', label: 'What is the red heart?', q: ['determination', 'soul', 'heart', 'red heart'],
+    a: ['That heart is your SOUL. It runs on DETERMINATION. So do I.'], f: ['techno', 'about'] },
+  { id: 'study', label: 'Where did you study?', q: ['university', 'school', 'degree', 'study', 'education', 'college', 'student'],
+    a: ["I'd rather show you what I've built. Ask me about a project!"], f: ['projects', 'skills'] },
+  { id: 'rank', label: 'Did you win?', q: ['rank', 'ranking', 'leaderboard position', 'score', 'did you win', 'placement', 'medal', 'prize'],
+    a: ['I would rather talk about what I built and learned than about leaderboard numbers.', 'Ask me how the TrafficFlowBench forecasts stay strictly causal, for example.'], f: ['causal', 'competitions'] },
+  { id: 'potato', label: 'Potatoes?', q: ['potato', 'potatoes', 'potato farm'], secret: 'potato',
+    a: ['Ah. Potatoes.', 'Some legends are built one harvest at a time.'], f: ['techno', 'about'] },
+];
+
+export const STARTERS = ['about', 'projects', 'hire'];

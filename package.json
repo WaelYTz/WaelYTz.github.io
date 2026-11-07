@@ -1,0 +1,25 @@
+{
+  "name": "waelytz-portfolio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Wael's portfolio: an explorable pixel-art underground (Vite + TypeScript + Phaser 3).",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview --port 4173",
+    "check": "tsc",
+    "shots": "node scripts/shots.mjs"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "fuse.js": "^7.5.0",
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "playwright-core": "^1.65.0",
+    "typescript": "^7.0.2",
+    "vite": "^6.4.5"
+  }
+}

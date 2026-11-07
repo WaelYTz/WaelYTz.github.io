@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://waelytz.github.io/sitemap.xml

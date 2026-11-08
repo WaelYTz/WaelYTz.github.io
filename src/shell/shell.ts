@@ -38,9 +38,11 @@ export function fit(game: Phaser.Game) {
   const dpr = window.devicePixelRatio || 1;
   const fit = Math.min(aw / BASE_W, ah / BASE_H);
   const dev = fit * dpr; // device pixels per canvas pixel if we filled the space
-  // Snap to half-steps in *device* pixels: world art is drawn at 2x, so every world pixel stays a perfect square.
-  // On high-density phones the difference is invisible, so just fill the space.
-  const zoom = dpr >= 2 ? fit : dev >= 1 ? Math.floor(dev * 2) / 2 / dpr : Math.max(0.4, fit);
+  // Snap to half-steps in *device* pixels (world art is drawn at 2x, so every world pixel stays a perfect square),
+  // but only when that costs little space. Otherwise fill the screen: at this size a pixel that is a hair wider
+  // than its neighbour is invisible, while a window 25% smaller is not. High-density phones always fill.
+  const snapped = dev >= 1 ? Math.floor(dev * 2) / 2 / dpr : fit;
+  const zoom = Math.max(0.4, dpr >= 2 || snapped < fit * 0.92 ? fit : snapped);
   game.scale.setZoom(zoom);
   game.scale.refresh();
   placeTypebox();

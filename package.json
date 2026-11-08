@@ -13,6 +13,8 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@huggingface/transformers": "4.3.1",
+    "@mlc-ai/web-llm": "0.2.86",
     "fuse.js": "^7.5.0",
     "phaser": "^3.90.0"
   },

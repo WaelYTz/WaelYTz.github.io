@@ -1,4 +1,4 @@
-// The Mirror's knowledge base: questions Wael answers in his own voice. Facts only (from the repos and the profile).
+// WAEL's knowledge base: questions he answers in his own voice (in his room, in Lamplight Square). Facts only (from the repos and the profile).
 import { EMAIL_OBFUSCATED } from './profile';
 
 export interface KBEntry {
@@ -13,7 +13,7 @@ export interface KBEntry {
 export const KB: KBEntry[] = [
   { id: 'about', label: 'Who are you?', q: ['who are you', 'tell me about yourself', 'introduce yourself', 'who is wael', 'about you', 'what do you do', 'wael'],
     a: ["I'm Wael, an ML engineer and AI-agent builder.", 'I build forecasting models and multi-agent LLM systems, and I compete on Kaggle and Zindi.'], f: ['projects', 'skills', 'hire'] },
-  { id: 'projects', label: 'What have you built?', q: ['what have you built', 'projects', 'show me your projects', 'portfolio', 'your work', 'what did you make'],
+  { id: 'projects', label: 'What have you built?', q: ['what have you built', 'projects', 'show me your projects', 'portfolio', 'your work', 'what did you make', 'proudest', 'proud of', 'best project', 'favorite project', 'favourite project'],
     a: ['A few I am proud of: TrafficFlowBench (causal traffic forecasting), the Refactoring Swarm (agents that fix code), and One Road Out (a bias I found for Zindi).',
       'Also VEC Leaderboard Insights, a QLoRA fine-tune of Qwen 2.5 3B, ML algorithms from scratch, and a hackathon frontend.'], f: ['tfb', 'swarm', 'road'] },
   { id: 'tfb', label: 'What is TrafficFlowBench?', q: ['trafficflowbench', 'traffic flow bench', 'traffic', 'ieee big data cup', 'big data cup', 'queue forecasting', 'freeway', 'ieee'],
@@ -34,7 +34,7 @@ export const KB: KBEntry[] = [
   { id: 'vec', label: 'What is VEC Leaderboard Insights?', q: ['vec', 'virtual embryo', 'neurips', 'leaderboard insights', 'embryo', 'dashboard'],
     a: ['A small, dependency-free tool for the NeurIPS 2026 Virtual Embryo Challenge.',
       'It reads the public leaderboard and tells participants which metric to improve next, with a live dashboard and daily anonymised snapshots.'], f: ['competitions', 'projects'] },
-  { id: 'qlora', label: 'Have you fine-tuned LLMs?', q: ['llm fine tune', 'fine tune', 'fine-tune', 'finetune', 'qlora', 'qwen', 'fine tuning', 'lora', 'llm', 'hugging face'],
+  { id: 'qlora', label: 'Have you fine-tuned LLMs?', q: ['llm fine tune', 'fine tune', 'fine-tune', 'finetune', 'qlora', 'qwen', 'fine tuning', 'lora', 'llm', 'hugging face', 'transformers', 'transformer'],
     a: ['Yes. With a teammate at llm-lab-dz, I fine-tuned Qwen 2.5 3B Instruct with QLoRA on a cleaned UltraChat set.',
       '4-bit NF4 quantisation, a rank-16 LoRA adapter on a single GPU, and checkpoints pushed to the Hugging Face Hub.'], f: ['swarm', 'skills'] },
   { id: 'mlscratch', label: 'ML from scratch?', q: ['from scratch', 'ml algorithms', 'gradient descent', 'linear regression', 'logistic regression', 'decision tree', 'random forest'],
@@ -63,13 +63,15 @@ export const KB: KBEntry[] = [
     a: ['"If you know the enemy and know yourself, you need not fear the result of a hundred battles." Sun Tzu, in Lionel Giles\' 1910 translation.',
       'For me it means: know the metric, know your validation set.'], f: ['techno', 'causal'] },
   { id: 'site', label: 'How was this place built?', q: ['how was this built', 'this site', 'this website', 'how did you make this', 'phaser', 'game', 'this portfolio', 'built with'],
-    a: ['Vite, TypeScript and Phaser 3, hosted for free on GitHub Pages.', 'Every sprite is drawn from code and every note is synthesized. Even I am just fuzzy search over a small local knowledge base.'], f: ['mirror', 'github'] },
-  { id: 'mirror', label: 'Are you an AI?', q: ['are you an ai', 'are you real', 'chatgpt', 'gpt', 'are you a bot', 'what are you', 'mirror'],
-    a: ["I'm a mirror, not a model. I match your question against answers Wael wrote, with no network and no LLM.", 'The code is ready for a real model to be plugged in someday.'], f: ['site', 'about'] },
+    a: ['Vite, TypeScript and Phaser 3, hosted for free on GitHub Pages.', 'Every sprite is drawn from code and every note is synthesized. Even this pixel version of me runs entirely in your browser.'], f: ['mirror', 'github'] },
+  { id: 'mirror', label: 'Are you an AI?', q: ['are you an ai', 'are you real', 'chatgpt', 'gpt', 'are you a bot', 'what are you exactly', 'mirror'],
+    a: ["I'm a pixel version of Wael. By default I answer from notes the real Wael wrote: a tiny AI model in your browser finds the one that matches what you mean.", "On a desktop you can also wake my AI brain in OPTIONS: a small open model (Built with Llama) that runs on your own GPU. Either way, nothing you type leaves your browser."], f: ['site', 'about'] },
   { id: 'hello', label: 'Hi!', q: ['hi', 'hello', 'hey', 'yo', 'salam', 'good morning', 'good evening'],
     a: ['Hi, {name}! Ask me about my projects, my stack, competitions, or how to reach me.'], f: ['about', 'projects', 'contact'] },
   { id: 'thanks', label: 'Thanks!', q: ['thanks', 'thank you', 'cool', 'nice', 'awesome', 'great', 'love it'],
     a: ['Thank you for walking all the way down here, {name}.'], f: ['hire', 'contact'] },
+  { id: 'cute', label: 'You are cute!', q: ['cute', 'cutie', 'adorable', 'you are cute', 'so cute', 'kawaii', 'i like you', 'love you', 'you are cool', 'you are awesome', 'best character'],
+    a: ['Heh. I know.', '...Okay, okay. Thank you, {name}. The hair took the most pixels.'], f: ['about'] },
   { id: 'soul', label: 'What is the red heart?', q: ['determination', 'soul', 'heart', 'red heart'],
     a: ['That heart is your SOUL. It runs on DETERMINATION. So do I.'], f: ['techno', 'about'] },
   { id: 'study', label: 'Where did you study?', q: ['university', 'school', 'degree', 'study', 'education', 'college', 'student'],

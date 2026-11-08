@@ -22,8 +22,12 @@ export interface RoomLogic {
   create?(w: WorldApi): void;
   update?(w: WorldApi, dt: number): void;
   interact?(w: WorldApi, e: Entity): Promise<boolean> | boolean;
-  /** Called when the player steps on a tile; return false to cancel the step. */
+  /** Called when the player steps on a tile. */
   onTile?(w: WorldApi, tx: number, ty: number): void;
+  /** Z pressed with nothing in front of the SOUL; return true if the room used it (e.g. a floor puzzle). */
+  confirm?(w: WorldApi): boolean;
+  /** A click/tap path ended on this tile (or the SOUL was already there); return true if the room used it. */
+  tapTile?(w: WorldApi, tx: number, ty: number): boolean;
   destroy?(w: WorldApi): void;
 }
 
@@ -41,4 +45,7 @@ export interface WorldApi {
   solidAt(r: Rect, ignore?: Entity): boolean;
   addSolid(e: Entity, r: Rect | undefined): void;
   moving: boolean;
+  emote(e: Entity, text: string, ms?: number, color?: string): void;
+  setSpikes(flag: string, down: boolean): void;
+  wearCosmetic(): void;
 }

@@ -15,6 +15,7 @@ const logic: RoomLogic = {
       w.addSolid(pip, undefined);
       pip.hit = undefined;
     } else if (pip) {
+      pip.data.noAuto = true;
       pip.sprite?.setAlpha(0);
       void intro(w, pip);
     }

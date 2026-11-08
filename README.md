@@ -18,6 +18,10 @@ npm run preview    # serve dist/ on http://localhost:4173
 npm run shots      # headless Edge screenshots + smoke test (needs preview running)
 ```
 
-Content (projects, competitions, skills, the Mirror's answers) lives in `src/content/` and also generates `/resume`, `llms.txt` and `profile.json` at build time.
+Content (projects, competitions, skills, Wael's in-game answers) lives in `src/content/` and also generates `/resume`, `llms.txt` and `profile.json` at build time.
 
-Deep links: `/#/lab`, `/#/projects`, `/#/records`, `/#/library`, `/#/memorial`, `/#/shop`, `/#/mirror?q=your+question`, `/#/exit`.
+Wael (in his house) answers typed questions entirely in the visitor's browser:
+- **Smart match** (everyone): a small sentence-embedding model ([all-MiniLM-L6-v2](https://huggingface.co/Xenova/all-MiniLM-L6-v2) via transformers.js, about 25 MB) picks the written answer in `src/content/kb.ts` that means the same thing as the question.
+- **AI brain** (optional, desktop browsers with WebGPU, OPTIONS > Wael AI): Llama 3.2 1B Instruct via [WebLLM](https://github.com/mlc-ai/web-llm), downloaded once (about 700 MB) and cached by the browser. It only answers from those written facts, and a filter falls back to the written answer if a reply goes off script. Built with Llama.
+
+Deep links: `/#/lab`, `/#/projects`, `/#/records`, `/#/library`, `/#/memorial`, `/#/shop`, `/#/wael?q=your+question`, `/#/garden`, `/#/hallway`, `/#/exit`.

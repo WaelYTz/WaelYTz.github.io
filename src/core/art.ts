@@ -8,7 +8,7 @@ export const TILE = 16;
 type Ctx = CanvasRenderingContext2D;
 
 // ───────────────────────── helpers ─────────────────────────
-function rng(seed: number) {
+export function rng(seed: number) {
   let s = seed >>> 0 || 1;
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
 }
@@ -47,11 +47,11 @@ export function framesTex(scene: Phaser.Scene, key: string, frames: string[][], 
   frames.forEach((_, i) => tex.add(i, 0, i * w, 0, w, h));
   return key;
 }
-function rect(c: Ctx, col: string, x: number, y: number, w: number, h: number) {
+export function rect(c: Ctx, col: string, x: number, y: number, w: number, h: number) {
   c.fillStyle = col;
   c.fillRect(x, y, w, h);
 }
-function line(c: Ctx, col: string, x0: number, y0: number, x1: number, y1: number) {
+export function line(c: Ctx, col: string, x0: number, y0: number, x1: number, y1: number) {
   // Bresenham, so lines stay pixel-crisp
   c.fillStyle = col;
   x0 |= 0; y0 |= 0; x1 |= 0; y1 |= 0;
@@ -104,122 +104,391 @@ export const T = {
   GLOW: 10, STONE: 11, STARS: 12, FACE_UP: 13, WALLTOP: 16, // 16..31
 } as const;
 
+// Every surface is a tiny pixel shader (x, y → colour) on a 16px period, so tiles join seamlessly. The two wall tiles
+// share one 32px-tall face: FACE_UP is rows 0-15 and WALLFACE rows 16-31 of the same drawing.
+//   0-2  the top of the wall seen from above   3 lit lip   4 outline
+//   5-23 the wall's own texture (stone blocks, boards, wallpaper...)   24 outline
+//   25-28 skirting strip (or cables)   29 outline   30-31 the floor, in the wall's shadow
+type Shade = (x: number, y: number) => string;
+const has = (pts: number[][], x: number, y: number) => pts.some(([a, b]) => a === x && b === y);
+/** Pixel lookup from a small hand-drawn map: each character picks a colour (others fall back). */
+const pick = (rows: string[], pal: Record<string, string>, fb: Shade): Shade => (x, y) => pal[rows[y]?.[x] ?? '.'] ?? fb(x, y);
+
+function floorShader(th: Theme): Shade {
+  const [f0, f1, f2] = th.floor;
+  switch (th.floorKind) {
+    case 'flagstone': {
+      // two bands of worn flagstones with staggered joints, rounded corners and lit top-left edges
+      return (x, y) => {
+        const band = y < 9 ? 0 : 1, iy = band ? y - 9 : y, h = band ? 7 : 9;
+        const joints = band ? [2, 11] : [6];
+        if (iy === h - 1 || joints.includes(x)) return f2;
+        const left = joints.includes((x + 15) % 16), right = joints.includes((x + 1) % 16);
+        if ((left || right) && (iy === 0 || iy === h - 2)) return f2;
+        if (iy === 0 || left) return f1;
+        return has([[9, 4], [10, 4], [4, 12], [14, 13]], x, y) ? f2 : f0;
+      };
+    }
+    case 'speckle': {
+      const dark = [[2, 3], [3, 3], [11, 1], [6, 9], [14, 12], [3, 13], [9, 14], [12, 6], [7, 10]];
+      const lite = [[8, 4], [13, 9], [1, 8], [6, 13], [10, 11], [4, 6]];
+      return (x, y) => (has(dark, x, y) ? f2 : has(lite, x, y) ? f1 : f0);
+    }
+    case 'rock': {
+      // dark rock with a few cracks, lit chips and the odd gold fleck
+      const dark = [[2, 3], [3, 4], [4, 4], [5, 4], [11, 11], [12, 12], [13, 12]];
+      const lite = [[2, 2], [3, 3], [11, 10]];
+      return (x, y) => (th.fleck && x === 9 && y === 6 ? th.fleck : has(dark, x, y) ? f2 : has(lite, x, y) ? f1 : f0);
+    }
+    case 'planks': {
+      // long boards 3px tall with a dark seam; only every other board has a butt joint in this tile
+      const jx = [5, -1, 12, -1];
+      const grain = [[9, 1], [10, 1], [2, 5], [3, 5], [4, 5], [6, 13], [7, 13]];
+      return (x, y) => {
+        const b = y >> 2, ry = y & 3;
+        if (ry === 3) return f2;
+        if (x === jx[b]) return f2;
+        if (x === jx[b] + 1 && ry === 0) return f1;
+        return has(grain, x, y) ? f1 : f0;
+      };
+    }
+    case 'parquet':
+      // basket weave: 8px squares of two boards, turning a quarter each square, with a lit edge per board
+      return (x, y) => {
+        const flip = ((x >> 3) + (y >> 3)) % 2 === 1;
+        const u = flip ? y & 7 : x & 7, v = flip ? x & 7 : y & 7; // u runs across the boards
+        if ((x & 7) === 7 || (y & 7) === 7) return f2;
+        if (u === 3) return v === 0 ? f2 : f1;
+        return u === 0 && v < 3 ? f1 : f0;
+      };
+    case 'tiles':
+      // four 8px tiles: soft grout, a lit top-left bevel
+      return (x, y) => ((x & 7) === 7 || (y & 7) === 7 ? f2 : (x & 7) === 0 || (y & 7) === 0 ? f1 : f0);
+    case 'sand': {
+      // packed sand: a few dark grains and the odd little lit cross
+      const plus = [[11, 3], [10, 3], [12, 3], [11, 2], [11, 4]];
+      const dark = [[3, 8], [7, 13], [13, 11], [5, 2], [14, 15]];
+      return (x, y) => (has(plus, x, y) || has([[2, 12], [8, 8]], x, y) ? f1 : has(dark, x, y) ? f2 : f0);
+    }
+    case 'grass': {
+      const tufts = [[2, 3], [10, 1], [6, 9], [13, 11], [0, 14]];
+      const dark: number[][] = [];
+      for (const [a, b] of tufts) dark.push([a + 1, b], [a, b + 1], [a + 2, b + 1]);
+      const lite = [[5, 2], [12, 6], [3, 10], [9, 13], [14, 4], [7, 5]];
+      return (x, y) => (has(dark, x, y) ? f2 : has(lite, x, y) ? f1 : f0);
+    }
+    case 'slabs':
+      // long stone slabs in a running bond, lit on top (gold inlay in the grout when the theme has a fleck)
+      return (x, y) => {
+        const top = y < 8;
+        if ((y & 7) === 7 || x === (top ? 15 : 7)) return th.fleck && ((x === 15 && y === 7) || (x === 7 && y === 15)) ? th.fleck : f2;
+        if ((y & 7) === 0) return f1;
+        return has([[4, 3], [11, 11], [12, 12]], x, y) ? f2 : f0;
+      };
+    case 'void':
+      return (x, y) => (x === 0 || y === 0 ? f1 : has([[8, 8], [3, 11]], x, y) ? f2 : f0);
+    default:
+      return () => f0;
+  }
+}
+
+
+function pathShader(th: Theme): Shade {
+  const [p0, p1, p2] = th.path;
+  switch (th.pathKind) {
+    case 'slab':
+      return (x, y) => (x === 15 || y === 15 ? p2 : x === 0 || y === 0 ? p1 : has([[12, 3], [3, 11]], x, y) ? p2 : p0);
+    case 'cobble':
+      // rounded stones in staggered rows, dark grout, lit tops
+      return (x, y) => {
+        const row = y >> 3, iy = y & 7;
+        const ix = (x + (row ? 4 : 0)) & 7;
+        if (iy === 7 || ix === 7 || ((iy === 0 || iy === 6) && (ix === 0 || ix === 6))) return p2;
+        return iy === 0 || ix === 0 ? p1 : p0;
+      };
+    case 'dirt':
+      return (x, y) => (has([[3, 4], [11, 9], [7, 13], [13, 2]], x, y) ? p2 : has([[4, 4], [12, 9], [6, 7]], x, y) ? p1 : p0);
+    default:
+      return () => p0;
+  }
+}
+
+/** The thick top of the wall, seen from above. */
+function topShader(th: Theme): Shade {
+  const [t0, t1, t2] = th.top;
+  switch (th.topKind) {
+    case 'stone':
+      return (x, y) => ((y & 7) === 7 || x === (y < 8 ? 15 : 7) ? t1 : has([[4, 3], [11, 12]], x, y) ? t1 : t0);
+    case 'leaf':
+      // overlapping leaf scales: a lit arc on top of each, a dark gap below
+      return (x, y) => {
+        const ry = y & 3, sx = (x + ((y >> 2) % 2) * 4) & 7;
+        if (ry === 3 && sx !== 3 && sx !== 4) return t1;
+        if (ry === 0 && sx >= 2 && sx <= 5) return t2;
+        return t0;
+      };
+    case 'shingle':
+      // overlapping timber shingles with rounded bottoms
+      return (x, y) => {
+        const ry = y & 3, sx = (x + ((y >> 2) % 2) * 4) & 7;
+        if ((ry === 3 && sx >= 1 && sx <= 6) || (ry === 2 && (sx === 0 || sx === 7))) return t1;
+        if (sx === 0 && ry < 2) return t1;
+        return ry === 0 && sx >= 2 && sx <= 4 ? t2 : t0;
+      };
+    case 'beam':
+      return (x, y) => ((y & 3) === 3 || x === [4, 12, 8, 0][y >> 2] ? t1 : t0);
+    case 'plate':
+      return (x, y) => (x === 15 || y === 15 ? t1 : has([[2, 2], [13, 2], [2, 13], [13, 13]], x, y) ? t2 : t0);
+    case 'rock':
+      return (x, y) => (has([[3, 2], [4, 2], [12, 5], [7, 9], [8, 10], [2, 12], [13, 13], [14, 13]], x, y) ? t1 : has([[5, 6], [11, 11]], x, y) ? t2 : t0);
+    case 'starry':
+      return (x, y) => (x === 4 && y === 5 ? '#ffffff' : x === 12 && y === 11 ? '#8a8ab8' : t0);
+    case 'sky':
+      // a deep night sky: a band of lighter indigo and a few stars
+      return (x, y) => (has([[4, 5], [12, 12]], x, y) ? '#ffffff' : has([[10, 2], [1, 10], [7, 14]], x, y) ? '#8a86c8' : (x + y * 3) % 7 === 0 && y > 8 ? t1 : t0);
+    default:
+      return (x, y) => (has([[5, 6], [12, 11]], x, y) ? t1 : t0);
+  }
+}
+
+/** The wall's face, rows 5..23 of the 32px wall. */
+function faceShader(th: Theme): Shade {
+  const [w0, w1, w2] = th.wallFace;
+  const [r0, r1] = th.trim;
+  switch (th.wallKind) {
+    case 'server': {
+      // slate blocks in two courses; faint circuit grooves end in glowing pads; heat-sink fins (one cracked) on top;
+      // moss creeping over the deeper catacombs
+      const fins = !!th.fins;
+      const aTop = fins ? 8 : 5, bTop = fins ? 16 : 15, aJ = 11, bJ = 3;
+      const [tg, tl] = th.trace ?? [w1, w2];
+      const traceA = [[2, aTop + 3], [3, aTop + 3], [4, aTop + 3], [5, aTop + 3], [6, aTop + 3], [7, aTop + 3], [7, aTop + 4], [7, aTop + 5]];
+      const padA = [[1, aTop + 3], [7, aTop + 6], [8, aTop + 6]];
+      const traceB = [[13, bTop + 2], [13, bTop + 3], [13, bTop + 4], [14, bTop + 4], [15, bTop + 4], [0, bTop + 4], [1, bTop + 4]];
+      const padB = [[13, bTop + 1], [2, bTop + 4], [2, bTop + 5]];
+      const mossL = [[2, aTop], [3, aTop], [4, aTop], [5, aTop], [3, aTop + 1], [8, bTop], [9, bTop], [10, bTop], [14, bTop], [15, bTop]];
+      const mossD = [[4, aTop + 1], [3, aTop + 2], [9, bTop + 1], [9, bTop + 2], [15, bTop + 1]];
+      return (x, y) => {
+        if (fins && y < 8) {
+          if (y === 7) return w1;
+          if ((x === 11 || x === 12) && y === 5) return w1; // a cracked fin
+          if (x === 12 && y === 6) return w1;
+          return x % 2 === 0 ? r0 : r1;
+        }
+        if (!fins && y === aTop - 1) return w1;
+        if (th.moss && has(mossL, x, y)) return th.moss[0];
+        if (th.moss && has(mossD, x, y)) return th.moss[1];
+        if (has(padA, x, y) || has(padB, x, y)) return tl;
+        if (has(traceA, x, y) || has(traceB, x, y)) return tg;
+        const inA = y < bTop;
+        if (y === bTop - 1) return w1; // mortar between the courses
+        if (x === (inA ? aJ : bJ)) return w1;
+        if (y === (inA ? aTop : bTop) || x === (inA ? aJ : bJ) + 1) return w2;
+        return has([[13, aTop + 4], [5, bTop + 5], [10, bTop + 3]], x, y) ? w1 : w0;
+      };
+    }
+    case 'stone':
+      // big blocks in a running bond, lit on top and left
+      return (x, y) => {
+        const row = y < 11 ? 0 : y < 18 ? 1 : 2;
+        const jx = row === 1 ? 7 : 15;
+        if (y === 11 || y === 18 || x === jx) return w1;
+        if (y === 5 || y === 12 || y === 19 || x === (jx + 1) % 16) return w2;
+        return has([[4, 8], [11, 15], [3, 21], [12, 22]], x, y) ? w1 : w0;
+      };
+    case 'rock':
+      // a dark rock cliff: lit ledges, cracks, a vein of gold
+      return pick([
+        '++++++.+++++++++',
+        '......#.........',
+        '.....#......,...',
+        '....#.......,...',
+        '###.....g....#..',
+        '+++#....g...#+++',
+        '....#....g.#....',
+        '.....+...#......',
+        '......+++.......',
+        '..,.............',
+        '..,......####...',
+        '########.+++####',
+        '+++++++#........',
+        '........#....,..',
+        '...g.....#...,..',
+        '....g.....#.....',
+        '.....g.....++++.',
+        '................',
+        '..........,.....',
+      ], { '+': w2, '#': w1, ',': w1, g: r0 }, () => w0) as Shade;
+    case 'siding': {
+      // horizontal clapboards, lit top edge, staggered butt joints
+      const jx = [3, 11, 7, 14, 1];
+      return (x, y) => {
+        const r = y - 5, b = r >> 2, ry = r & 3;
+        if (ry === 3) return w1;
+        if (x === jx[b % 5]) return w1;
+        return ry === 0 ? w2 : w0;
+      };
+    }
+    case 'panel':
+      // white wall panels, a teal stripe, rivets
+      return (x, y) => {
+        if (y >= 12 && y <= 13) return r0;
+        if (y === 14) return r1;
+        if (x === 15) return w1;
+        if (x === 0) return w2;
+        if (has([[3, 7], [12, 7], [3, 20], [12, 20]], x, y)) return w1;
+        return y === 18 ? w1 : y === 19 ? w2 : w0;
+      };
+    case 'wallpaper':
+      // a little star print above a wooden wainscot and a chair rail
+      return (x, y) => {
+        if (y === 16) return th.floor[1];
+        if (y === 17) return r0;
+        if (y === 18) return r1;
+        if (y > 18) return (x & 3) === 3 ? r1 : (x & 3) === 0 ? th.floor[1] : r0;
+        const ry = (y - 5) % 6, row = Math.floor((y - 5) / 6);
+        const dx = Math.abs(((x + (row % 2) * 4) & 7) - 3.5) - 0.5, dy = Math.abs(ry - 2);
+        if (dx === 0 && dy === 0) return w2;
+        if (dx + dy === 1) return w1;
+        return w0;
+      };
+    case 'hedge':
+      // leafy scales, darker toward the foot, with a few glowing fibre-optic tips
+      return (x, y) => {
+        if (has([[3, 9], [12, 18]], x, y)) return r0;
+        if (has([[10, 7], [5, 20]], x, y)) return r1;
+        const ry = (y - 5) & 3, sx = (x + (((y - 5) >> 2) % 2) * 4) & 7;
+        if (ry === 3 && sx !== 3 && sx !== 4) return w1;
+        if (ry === 0 && sx >= 2 && sx <= 5) return y < 15 ? w2 : w0;
+        return y > 19 && (x + y) % 2 === 0 ? w1 : w0;
+      };
+    case 'boards':
+      // raised wooden panels, two per tile, with a rail through the middle
+      return (x, y) => {
+        if (y === 13) return w1;
+        if (y === 14) return r0;
+        if (y === 15) return w2;
+        const ix = x & 7;
+        if (ix === 7) return w1;
+        if (ix === 0) return w2;
+        const inUp = y >= 7 && y <= 11, inLo = y >= 17 && y <= 22;
+        if ((inUp || inLo) && ix >= 2 && ix <= 5) return y === 7 || y === 17 ? r1 : r0;
+        return w0;
+      };
+    case 'pilaster':
+      // dark wood panelling with one brass-capped pilaster per tile
+      return (x, y) => {
+        if (y === 5) return r0;
+        if (y === 6) return r1;
+        const cap = y >= 7 && y <= 8, foot = y >= 21;
+        if ((cap || foot) && x >= 4 && x <= 11) return y === 7 || y === 21 ? r0 : x === 11 ? r1 : y === 8 ? r1 : w2;
+        if (x >= 5 && x <= 10) return x === 5 ? w1 : x === 6 ? w2 : x === 10 ? w1 : w0;
+        if (y === 14) return r1;
+        return (x === 1 || x === 14) && y > 9 && y < 19 ? w1 : w0;
+      };
+  }
+}
+
 export function buildTileset(scene: Phaser.Scene, themeId: string): string {
   const key = 'tiles-' + themeId;
   const th: Theme = THEMES[themeId] ?? THEMES.hub;
   canvasTex(scene, key, 32 * TILE, TILE, (c) => {
     const at = (i: number) => i * TILE;
-    const R = rng(themeId.length * 977 + 13);
-    // floor: flat, lighter than the walls, with faint seams; the alt tile has a small crack
-    const floor = (x: number, alt: boolean) => {
-      rect(c, th.floor[0], x, 0, 16, 16);
-      for (let i = 0; i < 4; i++) rect(c, th.floor[1], x + 1 + Math.floor(R() * 14), 1 + Math.floor(R() * 14), 2, 1);
-      rect(c, th.floor[2], x, 15, 16, 1);
-      rect(c, th.floor[2], x + 15, 0, 1, 16);
-      if (alt) {
-        line(c, th.floor[2], x + 4, 4, x + 7, 7);
-        line(c, th.floor[2], x + 7, 7, x + 6, 11);
-        line(c, th.floor[2], x + 7, 7, x + 11, 8);
-      }
+    const K = th.line;
+    const fl = floorShader(th), path = pathShader(th), top = topShader(th), face = faceShader(th);
+    const paint = (ox: number, sh: Shade) => {
+      for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) rect(c, sh(x, y), ox + x, y, 1, 1);
     };
-    floor(at(T.FLOOR), false);
-    floor(at(T.FLOOR2), true);
-    // carpet: deep colour, darker border, a thread of accent near the edge
-    {
-      const x = at(T.CARPET);
-      rect(c, th.carpet[0], x, 0, 16, 16);
-      for (let i = 0; i < 16; i += 4) rect(c, th.carpet[1], x + i + 2, 6, 1, 4), rect(c, th.carpet[1], x + 6, i + 2, 4, 1);
-      rect(c, th.carpet[2] + '66', x + 7, 7, 2, 2);
-    }
-    // lower wall face: flat panel, faint panel seam, dark baseboard, black foot
-    {
-      const x = at(T.WALLFACE);
-      rect(c, th.wallFace[0], x, 0, 16, 16);
-      rect(c, th.wallFace[1], x + 15, 0, 1, 12);
-      rect(c, th.wallFace[1], x, 11, 16, 4);
-      rect(c, th.wallFace[2] + '55', x, 11, 16, 1);
-      rect(c, '#000000', x, 15, 16, 1);
-    }
-    // upper wall face: flat panel crowned by a cornice
-    {
-      const x = at(T.FACE_UP);
-      rect(c, th.wallFace[0], x, 0, 16, 16);
-      rect(c, '#000000', x, 0, 16, 1);
-      rect(c, th.wallFace[2], x, 1, 16, 2);
-      rect(c, th.wallFace[1], x, 3, 16, 2);
-      rect(c, th.wallFace[1], x + 15, 5, 1, 11);
-    }
-    // door: a dark doorway with a frame
-    {
-      const x = at(T.DOOR);
-      rect(c, th.wallFace[1], x, 0, 16, 16);
-      rect(c, '#000000', x + 2, 2, 12, 14);
-      rect(c, th.wallFace[2] + '88', x + 1, 1, 14, 1);
-    }
-    // chasm + ledge
-    {
-      const x = at(T.CHASM);
-      rect(c, '#000000', x, 0, 16, 16);
-      rect(c, '#1a2a4a', x + 3, 5, 1, 1);
-      rect(c, '#1a2a4a', x + 11, 12, 1, 1);
-      const l = at(T.LEDGE);
-      rect(c, '#000000', l, 0, 16, 16);
-      rect(c, th.wallFace[0], l, 0, 16, 4);
-      rect(c, th.wallFace[1], l, 4, 16, 2);
-      rect(c, th.edge, l, 0, 16, 1);
-      for (let i = 0; i < 16; i += 3) rect(c, th.wallFace[1], l + i, 6, 1, 1 + ((i * 7) % 3));
-    }
-    // bridge plank (vertical boards, ropes on top and bottom)
-    {
-      const x = at(T.PLANK);
-      rect(c, '#000000', x, 0, 16, 16);
-      for (let b = 0; b < 4; b++) {
-        rect(c, '#8a5a2b', x + b * 4, 2, 3, 12);
-        rect(c, '#5c3a1a', x + b * 4, 13, 3, 1);
-        rect(c, '#b07a40', x + b * 4, 3, 1, 4);
+    /** One row of the 32px wall (see the layout above). */
+    const wallRow = (x: number, gy: number): string => {
+      if (gy <= 2) return top(x, gy);
+      if (gy === 3) return th.top[2];
+      if (gy === 4 || gy === 24 || gy === 29) return K;
+      if (gy <= 23) return face(x, gy);
+      if (gy <= 28) {
+        if (!th.cables) return th.base;
+        // two old cables run along the foot of the wall, held by a tie
+        const [cl, cd, c2] = th.cables;
+        if ((x === 6 || x === 7) && gy < 28) return x === 6 ? '#c8c4b0' : '#8a8676';
+        return gy === 25 ? cl : gy === 26 ? cd : gy === 27 ? c2 : th.base;
       }
-      rect(c, '#d9c08a', x, 1, 16, 1);
-      rect(c, '#d9c08a', x, 14, 16, 1);
-      const bx = at(T.BROKEN);
-      rect(c, '#000000', bx, 0, 16, 16);
-      rect(c, '#d9c08a', bx, 1, 5, 1);
-      rect(c, '#d9c08a', bx + 12, 14, 4, 1);
-      rect(c, '#5c3a1a', bx, 2, 3, 5);
-      rect(c, '#5c3a1a', bx + 13, 9, 3, 4);
-    }
-    // glow tile (encounter): floor + red rune ring
-    {
-      const x = at(T.GLOW);
-      floor(x, false);
-      c.strokeStyle = '#ff3a3a';
-      for (const [px, py] of [[4, 2], [11, 2], [13, 7], [11, 13], [4, 13], [2, 7]]) rect(c, '#ff3a3a', x + px, py, 2, 2);
-      rect(c, '#ff8080', x + 7, 7, 2, 2);
-    }
-    // stone (corridor) tile
-    {
-      const x = at(T.STONE);
-      rect(c, th.floor[2], x, 0, 16, 16);
-      rect(c, th.floor[0], x + 1, 1, 14, 14);
-      rect(c, th.floor[1], x + 2, 2, 12, 12);
-    }
-    // starfield void
-    {
-      const x = at(T.STARS);
-      rect(c, '#000000', x, 0, 16, 16);
-      const r2 = rng(99);
-      for (let i = 0; i < 3; i++) rect(c, r2() > 0.5 ? '#ffffff' : '#666688', x + Math.floor(r2() * 16), Math.floor(r2() * 16), 1, 1);
-    }
-    // wall-top variants: dark fill, with an edge line on every side that touches a walkable tile
+      return gy === 30 ? th.floor[2] : fl(x, 15);
+    };
+
+    // floors: the plain one, and a variant (an embedded copper trace in the catacombs, a crack elsewhere)
+    paint(at(T.FLOOR), fl);
+    const copper = [[3, 4], [4, 4], [5, 4], [6, 4], [7, 4], [7, 5], [7, 6], [8, 6], [9, 6], [10, 6]];
+    const crack = [[4, 4], [5, 5], [6, 6], [7, 7], [7, 8], [6, 9], [6, 10], [8, 7], [9, 7], [10, 8], [11, 8]];
+    paint(at(T.FLOOR2), (x, y) => {
+      if (th.trace) return has([[2, 4], [11, 6]], x, y) ? '#e8a060' : has(copper, x, y) ? '#a0602e' : fl(x, y);
+      return has(crack, x, y) ? th.floor[2] : has([[5, 4], [8, 6]], x, y) ? th.floor[1] : fl(x, y);
+    });
+    // carpet: a seamless rug weave, diamonds with a bright thread
+    paint(at(T.CARPET), (x, y) => {
+      const [c0, c1, c2] = th.carpet;
+      const cx = x & 7, cy = y & 7, alt = ((x >> 3) + (y >> 3)) % 2 === 0;
+      const d = Math.abs(cx - 3.5) + Math.abs(cy - 3.5);
+      if (alt && d === 3) return c1;
+      if (alt && d === 0) return c2;
+      if (!alt && (cx === 3 || cx === 4) && (cy === 3 || cy === 4)) return c2;
+      return (y & 7) === 0 && !alt ? c1 : c0;
+    });
+    // the two-tile wall
+    paint(at(T.FACE_UP), (x, y) => wallRow(x, y));
+    paint(at(T.WALLFACE), (x, y) => wallRow(x, y + 16));
+    // a doorway: just a dark opening
+    rect(c, '#000000', at(T.DOOR), 0, 16, 16);
+    // chasm: deep black; ledge: the floor's lit edge, then its cliff face falling away into the dark
+    rect(c, '#000000', at(T.CHASM), 0, 16, 16);
+    rect(c, th.floor[2], at(T.CHASM) + 4, 6, 1, 1);
+    rect(c, th.top[1], at(T.CHASM) + 11, 12, 1, 1);
+    paint(at(T.LEDGE), (x, y) => {
+      const [w0, w1, w2] = th.wallFace;
+      if (y === 0) return th.top[2];
+      if (y === 1) return K;
+      if (y <= 7) return x % 6 === 2 ? w1 : x % 6 === 3 && y < 5 ? w2 : y === 2 ? w2 : w0;
+      if (y <= 10) return (x + y) % 2 === 0 ? w1 : '#000000';
+      if (y === 11) return x % 3 === 0 ? w1 : '#000000';
+      return '#000000';
+    });
+    // rope bridge: boards across the gap, rope rails top and bottom
+    paint(at(T.PLANK), (x, y) => {
+      const bx = x & 3;
+      if (y === 1 || y === 14) return bx === 3 ? '#8a6a3a' : '#e0c890';
+      if (y === 0 || y === 15) return '#000000';
+      if (bx === 3) return '#000000';
+      if (y === 12) return '#6a3e1c';
+      if (y === 13) return '#000000';
+      return bx === 0 ? '#c88a4c' : y === 2 ? '#c88a4c' : '#9a6232';
+    });
+    paint(at(T.BROKEN), (x, y) => {
+      if (y === 1 && x < 6) return x === 3 ? '#8a6a3a' : '#e0c890';
+      if (y === 14 && x > 10) return '#e0c890';
+      if (x < 3 && y >= 2 && y <= 6) return x === 0 ? '#c88a4c' : y === 6 ? '#6a3e1c' : '#9a6232';
+      if (x > 12 && x < 15 && y >= 9 && y <= 13) return y === 9 ? '#c88a4c' : '#9a6232';
+      return '#000000';
+    });
+    // encounter tile: the floor with a red rune circle
+    paint(at(T.GLOW), (x, y) => {
+      const d = Math.hypot(x - 7.5, y - 7.5);
+      if (Math.abs(d - 6) < 0.55) return '#e8283a';
+      if (Math.abs(d - 4.6) < 0.4 && (x + y) % 2 === 0) return '#a01828';
+      if (has([[7, 7], [8, 8], [7, 8], [8, 7]], x, y)) return '#ff8a8a';
+      if (has([[7, 3], [8, 12], [3, 8], [12, 7]], x, y)) return '#ff5a5a';
+      return fl(x, y);
+    });
+    // paving / path
+    paint(at(T.STONE), path);
+    // a starfield
+    const sky = th.sky ?? '#000000', mid = th.sky ? '#b0aaf0' : '#9a9ac8', dim = th.sky ? '#5a5690' : '#4a4a6e';
+    paint(at(T.STARS), (x, y) => (x === 3 && y === 4 ? '#ffffff' : x === 11 && y === 10 ? mid : (x === 7 && y === 13) || (x === 13 && y === 2) ? dim : x === 8 && y === 7 && th.sky && th.fleck ? th.fleck : sky));
+    // the tops of walls: textured, outlined with a lit lip on every side that touches a walkable tile
     for (let m = 0; m < 16; m++) {
-      const x = at(T.WALLTOP + m);
-      rect(c, th.wallTop, x, 0, 16, 16);
-      rect(c, th.floor[0] + '66', x + 5, 6, 1, 1);
-      rect(c, th.floor[0] + '66', x + 12, 11, 1, 1);
-      const e = th.edge;
-      if (m & 1) rect(c, e, x, 0, 16, 1);
-      if (m & 2) rect(c, e, x + 15, 0, 1, 16);
-      if (m & 4) rect(c, e, x, 15, 16, 1);
-      if (m & 8) rect(c, e, x, 0, 1, 16);
+      paint(at(T.WALLTOP + m), (x, y) => {
+        if ((m & 1 && y === 0) || (m & 2 && x === 15) || (m & 4 && y === 15) || (m & 8 && x === 0)) return K;
+        if ((m & 1 && y === 1) || (m & 2 && x === 14) || (m & 4 && y === 14) || (m & 8 && x === 1)) return th.top[2];
+        return top(x, y);
+      });
     }
   });
   return key;
@@ -233,8 +502,30 @@ export const SOUL_BIG = [
 export const SOUL_SMALL = ['.##.##.', '#######', '#######', '.#####.', '..###..', '...#...'];
 const STAR = ['.....#.....', '.....#.....', '....###....', '....###....', '###########', '.#########.',
   '..#######..', '...#####...', '..###.###..', '.##.....##.', '##.......##'];
-export const CROWN = ['#.....#.....#', '##...###...##', '###.#####.###', '#############', '##p##p#p##p##', '#############', 'hhhhhhhhhhhhh'];
-const MINI_CROWN = ['k.k.k', 'kkkkk', 'kpkpk'];
+// The crown, inspired by Technoblade's: lemon gold, a row of points with little gem orbs on the tips,
+// and a band of mixed faceted gems (blue, green, a big red one in the middle, purple).
+export const CROWN_PAL = {
+  k: '#1c1400', Y: '#fffbc2', y: '#fff200', o: '#e6c600', d: '#b38f00', D: '#7a5c00', w: '#ffffff',
+  b: '#4d6df3', B: '#c4d0ff', r: '#ed1c24', R: '#ffb4b4', g: '#8ee01a', G: '#e0ffb0', p: '#ab36d1', P: '#efc0ff',
+};
+export const CROWN = [
+  '..........k..........',
+  '.........kwk.........',
+  '......k.kYydk.k......',
+  '.....kBkkYydkkPk.....',
+  '..k.kYydkYydkYydk.k..',
+  '.kGkkYydkYydkYydkkRk.',
+  'kYydkYydkYydkYydkYydk',
+  'kYydkYydkYydkYydkYydk',
+  'kYYYYYYYYYYYYYYYYYYYk',
+  'koBbooGgoRRroPpooBbok',
+  'kobbooggorrroppoobbok',
+  'kdddddddddddddddddddk',
+  'kDDDDDDDDDDDDDDDDDDDk',
+  '.kkkkkkkkkkkkkkkkkkk.',
+];
+/** The small one: what the SOUL wears, and the pickup hidden in the Proving Grounds. */
+export const MINI_CROWN = ['....k....', '..kkwkk..', '.kykykyk.', '.kykykyk.', 'kYYYYYYYk', 'kbogrpobk', 'kDDDDDDDk', '.kkkkkkk.'];
 
 const ICONS: Record<string, string[]> = {
   tfb: ['....##....', '...####...', '..#rr##...', '..#rr##...', '..#yy##...', '..#yy##...', '..#ee##...', '..#ee##...', '...####...', '....##....'],
@@ -248,6 +539,22 @@ const ICONS: Record<string, string[]> = {
 
 const BOT = ['..####..', '.#eeee#.', '.#e##e#.', '..####..', '.######.', '#.#tt#.#', '..####..', '..#..#..'];
 
+/** Shared colours for the small world sprites (letters as in props.ts). */
+const SPRITE_PAL: Record<string, string> = {
+  k: '#000000', _: 'rgba(0,0,0,0.28)',
+  w: '#ffffff', W: '#d8dce4', g: '#a0a8b4', G: '#6a7480', d: '#454c58', D: '#2a3038', // steel
+  s: '#8a98a4', S: '#5e6c78', t: '#3e4a54', // slate
+  y: '#ffe14a', Y: '#d8a838', O: '#9a6420', h: '#fff4c0', o: '#ff8a1a', // gold / brass / flame
+  a: '#ffc848', A: '#d88a28', // warm light
+  r: '#e83a3a', R: '#a01c24',
+  b: '#d49a5e', B: '#a86a3a', n: '#74441e', N: '#4a2a12', // wood
+  c: '#8af0ff', C: '#2aa8c8', // cyan glow
+  e: '#7ad860', E: '#3a9a3a', f: '#24642a', // greens
+  u: '#e8dcc0', U: '#c4b494', v: '#8e8068', // beige plastic
+  x: '#e8a060', X: '#a05a28', // copper / terracotta
+  z: '#0a1a14', Z: '#5ae08a', // dark screen, phosphor
+};
+
 export function buildSprites(scene: Phaser.Scene) {
   // The overworld SOUL is the profile's chunky 7x6 heart, shown at 2x so its pixels read clearly.
   gridTex(scene, 'soul', SOUL_SMALL, { '#': C.red });
@@ -255,9 +562,9 @@ export function buildSprites(scene: Phaser.Scene) {
   gridTex(scene, 'soul-detailed', SOUL_BIG, { r: C.red, h: '#ff9a9a', d: '#b00000' });
   gridTex(scene, 'soul-small', SOUL_SMALL, { '#': C.red });
   gridTex(scene, 'soul-small-hurt', SOUL_SMALL, { '#': '#ff9a9a' });
-  gridTex(scene, 'soul-crown', MINI_CROWN, { k: C.gold, p: C.pink });
+  gridTex(scene, 'soul-crown', MINI_CROWN, CROWN_PAL);
   gridTex(scene, 'star', STAR, { '#': C.yellow });
-  gridTex(scene, 'crown', CROWN, { '#': C.gold, p: C.pink, h: C.goldDark }, 2);
+  gridTex(scene, 'crown', CROWN, CROWN_PAL);
   canvasTex(scene, 'halo', 32, 32, (c) => {
     const g = c.createRadialGradient(16, 16, 0, 16, 16, 16);
     g.addColorStop(0, 'rgba(255,255,160,0.55)');
@@ -276,91 +583,79 @@ export function buildSprites(scene: Phaser.Scene) {
   for (const [k, eye, tool] of [['auditor', C.cyan, C.cyan], ['fixer', C.orange, C.yellow], ['judge', C.yellow, C.green]] as const)
     gridTex(scene, 'bot-' + k, BOT, { '#': '#d0d0d0', e: eye, t: tool });
 
-  // pedestal (16x24): stone column with a plate
-  canvasTex(scene, 'pedestal', 16, 24, (c) => {
-    rect(c, '#9a9ab0', 1, 6, 14, 3);
-    rect(c, '#ffffff', 1, 6, 14, 1);
-    rect(c, '#6a6a80', 3, 9, 10, 12);
-    rect(c, '#8a8aa0', 4, 9, 2, 12);
-    rect(c, '#9a9ab0', 1, 20, 14, 4);
-    rect(c, '#55556a', 1, 23, 14, 1);
-  });
-  // sign post (16x16)
-  canvasTex(scene, 'sign', 16, 16, (c) => {
-    rect(c, '#5c3a1a', 7, 9, 2, 7);
-    rect(c, '#ffffff', 1, 1, 14, 9);
-    rect(c, '#8a5a2b', 2, 2, 12, 7);
-    rect(c, '#d9c08a', 4, 4, 8, 1);
-    rect(c, '#d9c08a', 4, 6, 6, 1);
-  });
-  // pillar (16x32)
-  canvasTex(scene, 'pillar', 16, 32, (c) => {
-    rect(c, '#000000', 0, 0, 16, 32);
-    rect(c, '#ffffff', 1, 0, 14, 3);
-    rect(c, '#3a3a50', 3, 3, 10, 26);
-    rect(c, '#55556e', 4, 3, 2, 26);
-    rect(c, '#ffffff', 1, 29, 14, 3);
-    rect(c, '#000000', 2, 30, 12, 1);
-  });
-  // bookshelf (16x32); a variant with a book sticking out
-  const shelf = (out: boolean) => (c: Ctx) => {
-    rect(c, '#2a1a0c', 0, 0, 16, 32);
-    rect(c, '#5c3a1a', 0, 0, 16, 2);
-    rect(c, '#5c3a1a', 0, 0, 1, 32);
-    rect(c, '#5c3a1a', 15, 0, 1, 32);
-    const cols = ['#a83232', '#3266a8', '#3a8a4a', '#c8a040', '#7a4aa8', '#c86432', '#dddddd'];
-    const R = rng(out ? 7 : 3);
-    for (let s = 0; s < 3; s++) {
-      const y = 2 + s * 10;
-      rect(c, '#5c3a1a', 0, y + 8, 16, 2);
-      let x = 1;
-      while (x < 15) {
-        const w = 1 + Math.floor(R() * 2);
-        const h = 5 + Math.floor(R() * 3);
-        rect(c, cols[Math.floor(R() * cols.length)], x, y + 8 - h, Math.min(w, 15 - x), h);
-        x += w + (R() > 0.8 ? 1 : 0);
-      }
+  // ── small world sprites: black outlines, 2-3 shades per material, lit from the top-left ──
+  const Q = SPRITE_PAL;
+  // pedestal (16x24): a slate column with a brass plate (trophies, crowns and project icons sit on it)
+  gridTex(scene, 'pedestal', [
+    '................', '................', '................', '................', '................', '................',
+    '.kkkkkkkkkkkkkk.', 'khyyyyyyyyyyyYOk', 'kYYYYYYYYYYYYYOk', 'kOOOOOOOOOOOOOOk', '.kkkkkkkkkkkkkk.', '..kWssssssSStk..',
+    '..kWssssssSStk..', '..kWsCCCssSStk..', '..kWsssCssSStk..', '..kWsssCssSStk..', '..kWsssccsSStk..', '..kWssssssSStk..',
+    '..kWssssssSStk..', '.kkkkkkkkkkkkkk.', 'kWWWWWWWWWWWWWgk', 'ksssssssssssssSk', 'kSSSSSSSSSSSSStk', 'kkkkkkkkkkkkkkkk',
+  ], Q);
+  // sign post (16x16): a pale board in a wooden frame
+  gridTex(scene, 'sign', [
+    '................', '.kkkkkkkkkkkkkk.', 'kbbbbbbbbbbbbbBk', 'kbuuuuuuuuuuuUnk', 'kbuvvvvvvvvuuUnk', 'kbuuuuuuuuuuuUnk',
+    'kbuvvvvvvuuuuUnk', 'kbUUUUUUUUUUUUnk', 'knnnnnnnnnnnnnnk', '.kkkkkkkkkkkkkk.', '......kBnk......', '......kBnk......',
+    '......kBnk......', '......kBnk......', '......kNNk......', '.....______.....',
+  ], Q);
+  // pillar (16x32): a slate column with brass capitals and a faint glowing groove
+  const shaft = (row: number) => {
+    const base = '..kWsssssSSStk..';
+    if (row === 7 || row === 14) return base.slice(0, 6) + 'c' + base.slice(7);
+    if (row > 7 && row < 14) return base.slice(0, 6) + 'C' + base.slice(7);
+    if (row === 17) return '..kyyyyyyyyYOk..';
+    if (row === 18) return '..kOOOOOOOOOOk..';
+    return base;
+  };
+  gridTex(scene, 'pillar', [
+    '.kkkkkkkkkkkkkk.', 'khyyyyyyyyyyyYOk', 'kOOOOOOOOOOOOOOk', '.kkkkkkkkkkkkkk.', '..kWWWWWWWWWgk..', '..kkkkkkkkkkkk..',
+    ...Array.from({ length: 20 }, (_, i) => shaft(i + 6)),
+    '..kkkkkkkkkkkk..', '.kWWWWWWWWWWWgk.', 'kkkkkkkkkkkkkkkk', 'khyyyyyyyyyyyYOk', 'kOOOOOOOOOOOOOOk', 'kkkkkkkkkkkkkkkk',
+  ], Q);
+  // archive shelf (16x32): floppy disks, tape reels and cartridges instead of books; a variant with one sticking out
+  const shelf = (odd: boolean) => (c: Ctx) => {
+    rect(c, Q.k, 0, 0, 16, 32); rect(c, Q.n, 1, 1, 14, 30); rect(c, Q.b, 1, 1, 14, 1); rect(c, Q.N, 14, 2, 1, 29);
+    const floppy = (x: number, yb: number, body: string, dark: string) => {
+      rect(c, Q.k, x - 1, yb - 7, 5, 8); rect(c, body, x, yb - 6, 3, 7); rect(c, dark, x + 2, yb - 6, 1, 7); rect(c, Q.W, x + 1, yb - 5, 1, 2);
+    };
+    const reel = (x: number, yb: number) => drawGrid(c, ['.kkk.', 'knNnk', 'kNwNk', 'knNnk', '.kkk.'], Q, x, yb - 4);
+    const cart = (x: number, yb: number, col: string) => { rect(c, Q.k, x - 1, yb - 6, 4, 7); rect(c, col, x, yb - 5, 2, 6); rect(c, Q.U, x, yb - 3, 2, 1); };
+    for (const top of [3, 13, 23]) {
+      rect(c, '#24160c', 2, top, 12, 7);
+      rect(c, Q.b, 1, top + 7, 14, 1); rect(c, Q.N, 1, top + 8, 14, 1);
     }
-    if (out) rect(c, '#ffd700', 6, 13, 3, 7), rect(c, '#ffffff', 6, 13, 3, 1);
+    floppy(3, 9, '#3a6ab8', '#24447a'); floppy(7, 9, '#d84a4a', '#8a2228'); reel(10, 9);
+    reel(2, 19); floppy(8, 19, '#e8c040', '#a07a18'); floppy(12, 19, '#3a9a5a', '#22603a');
+    floppy(3, 29, '#8a5ac8', '#5a3a8a'); cart(7, 29, '#3a3a48'); cart(10, 29, '#5a5a6a'); rect(c, Q.k, 13, 26, 1, 4);
+    if (odd) { rect(c, Q.k, 5, 11, 5, 10); rect(c, '#ffd23a', 6, 12, 3, 8); rect(c, '#fff4c0', 6, 12, 3, 1); rect(c, '#c89a10', 8, 13, 1, 7); rect(c, Q.W, 7, 14, 1, 2); }
   };
   canvasTex(scene, 'shelf', 16, 32, shelf(false));
   canvasTex(scene, 'shelf-odd', 16, 32, shelf(true));
-  // trophy (16x20)
-  canvasTex(scene, 'trophy', 16, 20, (c) => {
-    drawGrid(c, [
-      '..kkkkkkkkkkkk..', '.kkwkkkkkkkkkkk.', 'kk.kkkkkkkkkk.kk', 'k..kkkkkkkkkk..k', 'k..kkkkkkkkkk..k',
-      '.k.kkkkkkkkkk.k.', '..kkkkkkkkkkkk..', '...kkkkkkkkkk...', '....kkkkkkkk....', '.....kkkkkk.....',
-      '......kkkk......', '.......kk.......', '.......kk.......', '......kkkk......', '....hhhhhhhh....',
-      '....hhhhhhhh....', '...hhhhhhhhhh...', '...hhhhhhhhhh...',
-    ], { k: C.gold, w: '#fff6c0', h: C.goldDark });
-  });
-  // terminal / monitor (16x24)
-  canvasTex(scene, 'terminal', 16, 24, (c) => {
-    rect(c, '#d0d0d0', 0, 0, 16, 13);
-    rect(c, '#06121f', 1, 1, 14, 11);
-    line(c, C.cyan, 2, 9, 5, 6); line(c, C.cyan, 5, 6, 8, 8); line(c, C.yellow, 8, 8, 13, 3);
-    rect(c, '#909090', 6, 13, 4, 4);
-    rect(c, '#b0b0b0', 2, 17, 12, 6);
-    for (let i = 0; i < 5; i++) rect(c, '#606060', 3 + i * 2, 19, 1, 1);
-  });
-  // lever (2 frames 16x16)
-  framesTex(scene, 'lever', [
-    ['................', '................', '...w............', '...ww...........', '....ww..........', '.....ww.........',
-      '......ww........', '.......ww.......', '....gggggggg....', '....gddddddg....', '....gggggggg....', '................'],
-    ['................', '................', '............w...', '...........ww...', '..........ww....', '.........ww.....',
-      '........ww......', '.......ww.......', '....gggggggg....', '....gddddddg....', '....gggggggg....', '................'],
-  ], { w: C.white, g: '#909090', d: '#404040' });
+  // trophy (16x20): a gold cup on a wooden plinth
+  gridTex(scene, 'trophy', [
+    '..kkkkkkkkkkkk..', '.kkyyyyyyyyYYkk.', 'kYkhyyyyyyyYOkYk', 'kYkhyyyyyyyYOkYk', 'kOkyyyyyyyyYOkOk', '.kkyyyyyyyyYOkk.',
+    '..kYyyyyyyyYOk..', '...kYyyyyyYOk...', '....kYYYYYOk....', '.....kkYOkk.....', '......kYOk......', '......kYOk......',
+    '.....kyYYOk.....', '....kkkkkkkk....', '....kNNNNNNk....', '...kbbbbbbbbk...', '...knyyyyyynk...', '...knnnnnnnnk...',
+    '...kNNNNNNNNk...', '...kkkkkkkkkk...',
+  ], Q);
+  // terminal (16x24): a beige CRT showing a rising line, and its keyboard
+  gridTex(scene, 'terminal', [
+    '.kkkkkkkkkkkkkk.', 'kuuuuuuuuuuuuuUk', 'kukkkkkkkkkkkkUk', 'kukzzzzzzzzzzkUk', 'kukzzzzzzzzZzkUk', 'kukzzzzzzzZzzkUk',
+    'kukzZzzzzZzzzkUk', 'kukzzZzzZzzzzkUk', 'kukzzzZZzzzzzkUk', 'kukzzzzzzzzzzkUk', 'kukkkkkkkkkkkkUk', 'kUUUUUUUUUUUrUvk',
+    'kvvvvvvvvvvvvvvk', '.kkkkkkkkkkkkkk.', '.....kUUUvk.....', '....kkkkkkkk....', '................', '.kkkkkkkkkkkkkk.',
+    'kuuuuuuuuuuuuuUk', 'kuvuvuvuvuvuvuvk', 'kuuuuuuuuuuuuuUk', 'kUvUvUvUvUvUvUvk', 'kvvvvvvvvvvvvvvk', '.kkkkkkkkkkkkkk.',
+  ], Q);
+  // lever (2 frames 16x12): a red knob on a steel arm in a steel base
+  const leverUp = ['................', '..kk............', '.krrk...........', '.kRrk...........', '..kkWk..........', '....kWk.........', '.....kWk........', '......kWk.......'];
+  const leverBase = ['...kkkkkkkkkk...', '..kWWWWWWWWWgk..', '..kGGGGGGGGGdk..', '...kkkkkkkkkk...'];
+  framesTex(scene, 'lever', [[...leverUp, ...leverBase], [...leverUp.map((row) => [...row].reverse().join('')), ...leverBase]], Q);
   // pushable ball (10x10)
-  gridTex(scene, 'ball', ['...####...', '.##wwww##.', '.#wwwwww#.', '#wwwwwwgg#', '#wwwwwwgg#', '#wwwwwggg#', '#wwwwgggg#', '.#wggggg#.', '.##gggg##.', '...####...'],
-    { '#': '#202020', w: '#ffffff', g: '#a0a0b0' });
+  gridTex(scene, 'ball', ['..kkkkkk..', '.kwwWWWWk.', 'kwwWWWWWgk', 'kwWWWWWWgk', 'kWWWWWWggk', 'kWWWWWWggk', 'kWWWWWgggk', 'kgWWggggGk', '.kggggGGk.', '..kkkkkk..'], Q);
   // plank (12x6) carried by the fixer bots
-  gridTex(scene, 'plank', ['.bbbbbbbbbb.', 'bbbBbbbbbbbb', 'bbbbbbbbBbbb', 'bbbbbbbbbbbb', 'dddddddddddd', '.dddddddddd.'],
-    { b: '#8a5a2b', B: '#b07a40', d: '#5c3a1a' });
-  // candle (8x12) for the memorial
-  framesTex(scene, 'candle', [
-    ['...y....', '..yoy...', '..yoy...', '...o....', '..www...', '..www...', '..www...', '..www...', '..www...', '.ggggg..'],
-    ['....y...', '...yoy..', '..yoy...', '...o....', '..www...', '..www...', '..www...', '..www...', '..www...', '.ggggg..'],
-  ], { y: C.yellow, o: C.orange, w: '#f0e8d0', g: '#909090' });
+  gridTex(scene, 'plank', ['kkkkkkkkkkkk', 'kbbbbbbbbbbk', 'kBBBBnBBBBBk', 'kBBBBBBBnBBk', 'knnnnnnnnnnk', 'kkkkkkkkkkkk'], Q);
+  // candle (2 frames 8x10) for the memorial: wax on a brass dish
+  const candleBody = ['..kNk...', '.kuuUk..', '.kuuUk..', '.kuuUk..', '.kuuUk..', 'kYYYYOk.', 'kkkkkkk.'];
+  framesTex(scene, 'candle', [['...y....', '..yoy...', '..yhy...', ...candleBody], ['....y...', '...yoy..', '..yhy...', ...candleBody]], Q);
   // mirror (32x48)
   canvasTex(scene, 'mirror', 32, 48, (c) => {
     rect(c, '#c8ccdc', 0, 0, 32, 48);
@@ -375,31 +670,31 @@ export function buildSprites(scene: Phaser.Scene) {
     line(c, '#ffffff', 8, 14, 15, 7);
     rect(c, '#c8ccdc', 12, 46, 8, 2);
   });
-  // plant (16x16)
+  // plant (16x12): a leafy sprout in a terracotta pot
   gridTex(scene, 'plant', [
-    '......e.........', '....e.e..e......', '...eee.eee......', '..e.eeeee.e.....', '....eeeee.......', '.....eee........',
-    '......e.........', '......e.........', '....oooooo......', '....oooooo......', '.....oooo.......', '.....oooo.......',
-  ], { e: C.green, o: '#a0522d' });
-  // map table (48x32): a little road network (the bottleneck is drawn by the room logic)
+    '.......kk.......', '....kk.keEk.kk..', '...keEkkeEkkeEk.', '...kEeEkeEkEeEk.', '....kEEkEEkEEk..', '.....kkEEEEkk...',
+    '.......kEEk.....', '....kkkkkkkk....', '....kxxxxxXk....', '....kXXXXXXk....', '.....kXXXXk.....', '.....kkkkkk.....',
+  ], Q);
+  // map table (48x32): a little road network on parchment, its one bottleneck glowing
   canvasTex(scene, 'maptable', 48, 32, (c) => {
-    rect(c, '#5c3a1a', 0, 4, 48, 26);
-    rect(c, '#d9d2b0', 2, 6, 44, 20);
-    rect(c, '#3a2410', 2, 28, 4, 4);
-    rect(c, '#3a2410', 42, 28, 4, 4);
+    rect(c, Q.k, 0, 3, 48, 26); rect(c, Q.B, 1, 4, 46, 24); rect(c, Q.b, 1, 4, 46, 1); rect(c, Q.n, 1, 25, 46, 2); rect(c, Q.N, 1, 27, 46, 1);
+    rect(c, Q.k, 3, 6, 42, 19); rect(c, '#e8dcb8', 4, 7, 40, 17); rect(c, '#cfc29a', 4, 23, 40, 1);
     for (const [a, b, d, e] of [[6, 10, 20, 10], [6, 10, 6, 22], [6, 22, 20, 22], [20, 10, 20, 22], [13, 10, 13, 22], [6, 16, 20, 16], [20, 16, 30, 16]])
-      line(c, '#505050', a, b, d, e);
-    for (const [a, b, d, e] of [[30, 16, 40, 12], [30, 16, 40, 22], [40, 12, 40, 22]]) line(c, '#505050', a, b, d, e);
-    rect(c, '#ff8c1a', 36, 9, 7, 16);
+      line(c, '#6a5a48', a, b, d, e);
+    for (const [a, b, d, e] of [[30, 16, 40, 12], [30, 16, 40, 22], [40, 12, 40, 22]]) line(c, '#6a5a48', a, b, d, e);
+    rect(c, '#ff8c1a', 36, 9, 7, 14);
     c.globalAlpha = 0.35;
-    rect(c, '#ff4000', 33, 8, 11, 18);
+    rect(c, '#ff4000', 33, 8, 11, 16);
     c.globalAlpha = 1;
+    rect(c, Q.k, 2, 28, 5, 4); rect(c, Q.N, 3, 28, 3, 3); rect(c, Q.k, 41, 28, 5, 4); rect(c, Q.N, 42, 28, 3, 3);
   });
-  buildLumen(scene);
-  // shop counter (48x16)
+  // shop counter (48x16): a lit wooden top, panelled front with a brass strip
   canvasTex(scene, 'counter', 48, 16, (c) => {
-    rect(c, '#ffffff', 0, 0, 48, 2);
-    rect(c, '#6a3a20', 0, 2, 48, 14);
-    for (let i = 4; i < 48; i += 8) rect(c, '#4a2810', i, 4, 1, 10);
+    rect(c, Q.k, 0, 0, 48, 16);
+    rect(c, Q.b, 1, 1, 46, 3); rect(c, '#f0c088', 1, 1, 46, 1);
+    rect(c, Q.B, 1, 5, 46, 10); rect(c, Q.Y, 1, 6, 46, 1); rect(c, Q.n, 1, 7, 46, 1);
+    for (let i = 8; i < 48; i += 8) { rect(c, Q.n, i, 8, 1, 6); rect(c, Q.b, i + 1, 8, 1, 6); }
+    rect(c, Q.N, 1, 14, 46, 1);
   });
   // gate (exit): glowing doorway 32x32
   canvasTex(scene, 'gate', 32, 32, (c) => {
@@ -411,285 +706,49 @@ export function buildSprites(scene: Phaser.Scene) {
     c.fillStyle = g;
     c.fillRect(4, 4, 24, 28);
   });
-  // wall decorations (original): a dark window, a climbing vine, a lab panel, a little shelf
-  canvasTex(scene, 'decor-window', 12, 20, (c) => {
-    rect(c, '#000000', 0, 0, 12, 20); rect(c, '#ffffff33', 1, 1, 10, 18); rect(c, '#000000', 2, 2, 8, 16);
-    rect(c, '#ffffff22', 3, 3, 2, 5); rect(c, '#000000', 0, 9, 12, 1);
-  });
+  // wall decorations, drawn into the wall face (their top two rows stay clear of the wall's lip)
+  // a small arched window glowing with warm light
+  gridTex(scene, 'decor-window', [
+    '............', '............', '....kkkk....', '..kkhhaakk..', '.khhaaaaAAk.', '.khaaaaaaAk.', 'khaaaakaaaAk', 'khaaaakaaaAk',
+    'kaaaaakaaaAk', 'kkkkkkkkkkkk', 'kaaaaakaaaAk', 'kaaaaakaaaAk', 'kAaaaakaaaAk', 'kAaaaakaaAAk', 'kAAaaakaAAAk', 'kAAAAAkAAAAk',
+    'kkkkkkkkkkkk', 'kbbbbbbbbbBk', 'knnnnnnnnnnk', '.kkkkkkkkkk.',
+  ], Q);
+  // a vine spilling down the wall, tangled with an old cable
   canvasTex(scene, 'decor-vine', 10, 26, (c) => {
-    for (let y = 0; y < 26; y++) {
-      const x = 4 + Math.round(Math.sin(y / 3) * 2);
-      rect(c, '#000000', x - 1, y, 3, 1); rect(c, '#3a8a3a', x, y, 1, 1);
-      if (y % 4 === 1) { rect(c, '#000000', x + 1, y - 1, 4, 3); rect(c, '#5ac05a', x + 2, y, 2, 1); }
-      if (y % 4 === 3) { rect(c, '#000000', x - 4, y - 1, 4, 3); rect(c, '#5ac05a', x - 3, y, 2, 1); }
+    rect(c, Q.k, 6, 2, 3, 18); rect(c, Q.d, 7, 2, 1, 17); rect(c, Q.k, 6, 19, 3, 3); rect(c, Q.X, 7, 20, 1, 1);
+    const stem = (y: number) => 3 + Math.round(Math.sin(y / 3) * 1.4);
+    for (let y = 2; y < 24; y++) rect(c, Q.k, stem(y) - 1, y, 3, 1);
+    for (let y = 2; y < 24; y++) rect(c, Q.f, stem(y), y, 1, 1);
+    for (let y = 3; y < 23; y += 3) {
+      const x = stem(y), right = (y / 3) % 2 === 1;
+      const lx = right ? x + 1 : x - 3;
+      rect(c, Q.k, lx - 1, y - 1, 5, 4);
+      rect(c, Q.E, lx, y, 3, 2); rect(c, Q.e, right ? lx + 1 : lx, y, 2, 1);
     }
   });
-  canvasTex(scene, 'decor-panel', 12, 12, (c) => {
-    rect(c, '#000000', 0, 0, 12, 12); rect(c, '#0c1830', 1, 1, 10, 10);
-    rect(c, C.cyan, 2, 2, 2, 2); rect(c, C.green, 5, 2, 2, 2); rect(c, C.red, 8, 2, 2, 2);
-    rect(c, '#2c4a74', 2, 6, 8, 1); rect(c, '#2c4a74', 2, 8, 6, 1);
-  });
+  // an old status panel: LEDs over a vent
+  gridTex(scene, 'decor-panel', [
+    '............', '............', 'kkkkkkkkkkkk', 'kWWWWWWWWWgk', 'kWkkkkkkkkgk', 'kWkeDaDrDkgk', 'kWkkkkkkkkgk', 'kWdGdGdGdGgk',
+    'kWGdGdGdGdgk', 'kWdGdGdGdGgk', 'kgggggggggGk', 'kkkkkkkkkkkk',
+  ], Q);
+  // a little wall shelf with two glowing jars and a sprout
   canvasTex(scene, 'decor-shelf', 14, 12, (c) => {
-    rect(c, '#000000', 0, 8, 14, 4); rect(c, '#8a5a2b', 1, 9, 12, 2);
-    rect(c, '#000000', 2, 1, 5, 8); rect(c, C.pink, 3, 2, 3, 6); rect(c, '#000000', 8, 3, 5, 6); rect(c, C.yellow, 9, 4, 3, 4);
+    rect(c, Q.k, 0, 8, 14, 3); rect(c, Q.b, 1, 9, 12, 1); rect(c, Q.n, 1, 10, 12, 1); rect(c, Q.k, 2, 11, 2, 1); rect(c, Q.k, 10, 11, 2, 1);
+    rect(c, Q.k, 1, 3, 5, 6); rect(c, '#ff9ad8', 2, 4, 3, 4); rect(c, '#fff0f8', 2, 4, 1, 2); rect(c, '#c05a9a', 4, 5, 1, 3); rect(c, Q.k, 2, 2, 3, 1);
+    rect(c, Q.k, 8, 3, 5, 6); rect(c, Q.c, 9, 4, 3, 4); rect(c, Q.w, 9, 4, 1, 2); rect(c, Q.C, 11, 5, 1, 3); rect(c, Q.k, 9, 2, 3, 1);
+    rect(c, Q.k, 6, 5, 2, 4); rect(c, Q.X, 6, 6, 2, 2); rect(c, Q.e, 6, 3, 1, 2); rect(c, Q.E, 7, 4, 1, 1);
   });
   // crack in a wall (16x16)
   gridTex(scene, 'crack', ['........', '...#....', '...##...', '....#...', '...##...', '..#..#..', '..#...#.', '........'], { '#': '#000000' }, 2);
   // tiny crown pickup (sparkles drawn by the room)
-  gridTex(scene, 'crown-pickup', MINI_CROWN, { k: C.gold, p: C.pink }, 2);
+  gridTex(scene, 'crown-pickup', MINI_CROWN, CROWN_PAL);
   // lab freeway mini-screen (wall art 32x16)
   canvasTex(scene, 'screen', 32, 16, (c) => {
-    rect(c, '#d0d0d0', 0, 0, 32, 16);
-    rect(c, '#06121f', 1, 1, 30, 14);
-    for (let i = 0; i < 4; i++) rect(c, '#334', 2, 4 + i * 3, 28, 1);
-    for (const [x, y, col] of [[4, 3, C.green], [9, 3, C.green], [14, 6, C.red], [16, 6, C.red], [18, 6, C.orange], [24, 9, C.green]] as const)
+    rect(c, Q.k, 0, 0, 32, 16); rect(c, '#c8ccd4', 1, 1, 30, 14); rect(c, '#eef0f4', 1, 1, 30, 1); rect(c, '#8a909c', 1, 14, 30, 1);
+    rect(c, Q.k, 2, 2, 28, 12); rect(c, '#06121f', 3, 3, 26, 10);
+    for (let i = 0; i < 3; i++) rect(c, '#1c2a3c', 3, 5 + i * 3, 26, 1);
+    for (const [x, y, col] of [[5, 4, C.green], [10, 4, C.green], [14, 7, C.red], [16, 7, C.red], [18, 7, C.orange], [24, 10, C.green]] as const)
       rect(c, col, x, y, 2, 1);
+    rect(c, '#5ac85a', 27, 14, 2, 1);
   });
-}
-
-// ───────────────────────── Lumen, the shopkeeper (original character) ─────────────────────────
-// A merchant whose head is a brass lantern with a friendly flame inside. Flat colours, black outlines.
-// Portrait frames: 0 idle, 1 flame flicker, 2 blink, 3 talking.
-const K = '#000000', BR = '#c89b3c', BRD = '#8a6420', GL = '#2a1a0a', FO = '#ff8a1a', FM = '#ffd23a', FC = '#fff4c0';
-const CL = '#4a2a7a', CLD = '#2e1850', SC = '#c8343a', WH = '#f2f2f2';
-
-function drawLumenPortrait(c: Ctx, ox: number, frame: number) {
-  const r = (x: number, y: number, w: number, h: number, col: string) => rect(c, col, ox + x, y, w, h);
-  // handle ring
-  r(20, 0, 8, 6, K); r(21, 1, 6, 4, BR); c.clearRect(ox + 23, 2, 2, 2);
-  // cap (trapezoid)
-  [[18, 29], [16, 31], [14, 33], [13, 34], [13, 34]].forEach(([a, b], i) => {
-    r(a - 1, 6 + i, b - a + 3, 1, K);
-    if (i > 0) r(a, 6 + i, b - a + 1, 1, i === 4 ? BRD : BR);
-  });
-  // glass box with brass posts and a warm glow
-  r(12, 11, 24, 23, K);
-  r(13, 11, 22, 22, GL);
-  r(16, 12, 16, 20, '#3e2610');
-  r(18, 14, 12, 16, '#55341a');
-  r(13, 11, 2, 22, BR); r(33, 11, 2, 22, BR); r(15, 11, 1, 22, K); r(32, 11, 1, 22, K);
-  // the flame: a teardrop, three tones
-  const half = [0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 6, 6, 6, 6, 5, 4];
-  half.forEach((h, i) => {
-    const y = 13 + i;
-    const sway = frame === 1 && i < 5 ? 1 : 0;
-    const cx = 24 + sway;
-    r(cx - h, y, h * 2, 1, FO);
-    if (h > 1) r(cx - h + 1, y, h * 2 - 2, 1, FM);
-    if (h > 3 && i > 8) r(cx - h + 3, y, h * 2 - 6, 1, FC);
-  });
-  // face
-  if (frame === 2) { r(20, 22, 2, 1, K); r(26, 22, 2, 1, K); }
-  else { r(20, 21, 2, 2, K); r(26, 21, 2, 2, K); r(20, 21, 1, 1, '#ffffff'); r(26, 21, 1, 1, '#ffffff'); }
-  r(18, 24, 1, 1, '#ff5a3a'); r(29, 24, 1, 1, '#ff5a3a');
-  if (frame === 3) { r(22, 25, 4, 3, K); r(23, 27, 2, 1, '#c8343a'); }
-  else { r(21, 25, 1, 1, K); r(22, 26, 4, 1, K); r(26, 25, 1, 1, K); }
-  // base
-  r(12, 33, 24, 3, K); r(13, 33, 22, 1, BR); r(13, 34, 22, 1, BRD);
-  // cloak (widening), with a red scarf and brass buttons
-  for (let y = 36; y < 56; y++) {
-    const hw = Math.round(9 + (y - 36) * 0.62);
-    r(24 - hw - 1, y, hw * 2 + 2, 1, K);
-    r(24 - hw, y, hw * 2, 1, CL);
-    r(24 - hw, y, 3, 1, CLD);
-  }
-  r(14, 36, 20, 3, SC); r(13, 36, 1, 3, K); r(34, 36, 1, 3, K); r(14, 39, 20, 1, K);
-  r(29, 39, 3, 6, SC); r(28, 39, 1, 6, K); r(32, 39, 1, 6, K); r(29, 45, 3, 1, K);
-  for (const by of [42, 47, 52]) { r(23, by, 2, 2, BR); r(23, by + 1, 2, 1, BRD); }
-  r(3, 55, 42, 1, K);
-}
-function drawLumenHands(c: Ctx) {
-  const glove = (x: number) => {
-    rect(c, K, x, 0, 9, 7); rect(c, WH, x + 1, 1, 7, 5);
-    rect(c, K, x + 3, 1, 1, 2); rect(c, K, x + 5, 1, 1, 2);
-  };
-  glove(4); glove(35);
-}
-function drawLumenSmall(c: Ctx, ox: number, frame: number) {
-  const r = (x: number, y: number, w: number, h: number, col: string) => rect(c, col, ox + x, y, w, h);
-  r(7, 0, 2, 1, K); r(6, 1, 4, 1, BR);
-  r(3, 2, 10, 2, K); r(4, 2, 8, 1, BR); r(4, 3, 8, 1, BRD);
-  r(3, 4, 10, 8, K); r(4, 4, 8, 7, GL); r(4, 4, 1, 7, BR); r(11, 4, 1, 7, BR);
-  r(6 + (frame ? 1 : 0), 5, 3, 1, FO); r(6, 6, 4, 4, FO); r(7, 7, 2, 3, FM);
-  r(6, 7, 1, 1, K); r(9, 7, 1, 1, K);
-  r(3, 11, 10, 1, K);
-  for (let y = 12; y < 24; y++) {
-    const hw = Math.round(4 + (y - 12) * 0.32);
-    r(8 - hw - 1, y, hw * 2 + 2, 1, K);
-    r(8 - hw, y, hw * 2, 1, CL);
-  }
-  r(5, 12, 6, 1, SC);
-  r(7, 15, 2, 1, BR); r(7, 18, 2, 1, BR);
-}
-function buildLumen(scene: Phaser.Scene) {
-  if (scene.textures.exists('lumen-big')) return;
-  canvasTex(scene, 'lumen-big', 48 * 4, 56, (c) => { for (let f = 0; f < 4; f++) drawLumenPortrait(c, f * 48, f); });
-  const t = scene.textures.get('lumen-big');
-  for (let f = 0; f < 4; f++) t.add(f, 0, f * 48, 0, 48, 56);
-  canvasTex(scene, 'lumen-hands', 48, 7, drawLumenHands);
-  canvasTex(scene, 'lumen', 32, 24, (c) => { drawLumenSmall(c, 0, 0); drawLumenSmall(c, 16, 1); });
-  const s = scene.textures.get('lumen');
-  s.add(0, 0, 0, 0, 16, 24);
-  s.add(1, 0, 16, 0, 16, 24);
-}
-
-// ───────────────────────── encounter monsters (original designs) ─────────────────────────
-// Classic battle-sprite style: white silhouettes on black, bold black features, one accent colour each.
-// Each texture has 2 idle frames side by side (64x64 each), shown at 3x.
-const EW = 64, EH = 64;
-function ellipseRows(cx: number, cy: number, rx: number, ry: number, cb: (y: number, x0: number, x1: number) => void) {
-  for (let y = Math.ceil(cy - ry); y <= Math.floor(cy + ry); y++) {
-    const dy = (y + 0.5 - cy) / ry;
-    if (Math.abs(dy) > 1) continue;
-    const dx = rx * Math.sqrt(1 - dy * dy);
-    cb(y, Math.round(cx - dx), Math.round(cx + dx));
-  }
-}
-function disc(c: Ctx, col: string, cx: number, cy: number, rx: number, ry = rx) {
-  ellipseRows(cx, cy, rx, ry, (y, a, b) => rect(c, col, a, y, b - a, 1));
-}
-function thick(c: Ctx, col: string, x0: number, y0: number, x1: number, y1: number) {
-  line(c, col, x0, y0, x1, y1);
-  line(c, col, x0 + 1, y0, x1 + 1, y1);
-}
-/** 3 frames: two idle frames and a hurt frame (f = 2). */
-function enemyTex(scene: Phaser.Scene, key: string, draw: (c: Ctx, f: number) => void, w = EW, h = EH) {
-  if (scene.textures.exists(key)) return;
-  canvasTex(scene, key, w * 3, h, (c) => {
-    for (let f = 0; f < 3; f++) {
-      c.save();
-      c.translate(f * w, 0);
-      draw(c, f);
-      c.restore();
-    }
-  });
-  const t = scene.textures.get(key);
-  for (let f = 0; f < 3; f++) t.add(f, 0, f * w, 0, w, h);
-}
-/** X-shaped "ouch" eye. */
-function ouch(c: Ctx, x: number, y: number, col = '#000000') {
-  for (let i = 0; i < 5; i++) { rect(c, col, x + i, y + i, 1, 1); rect(c, col, x + 4 - i, y + i, 1, 1); }
-}
-
-export function buildEnemies(scene: Phaser.Scene) {
-  const W = '#ffffff', B = '#000000';
-
-  // OVERFIT: a nervous blob whose jagged top edge touches every training point.
-  enemyTex(scene, 'enemy-overfit', (c, f) => {
-    const cx = 36, cy = 40, rx = 20, ry = 15; // shifted right so the flashcard stays inside this frame
-    const peaks: [number, number][] = [];
-    ellipseRows(cx, cy, rx, ry, () => undefined);
-    for (let x = cx - rx; x <= cx + rx; x++) {
-      const t = (x - cx) / rx;
-      const bottom = Math.round(cy + ry * Math.sqrt(Math.max(0, 1 - t * t)));
-      const k = Math.floor((x - (cx - rx)) / 5);
-      const phase = (x - (cx - rx)) % 5;
-      const amp = k % 2 ? 7 : 0;
-      const top = Math.round(cy - 6 - amp + (k % 2 ? phase : 4 - phase) * (k % 2 ? 1.2 : -0.4) - (f && k % 3 === 0 ? 1 : 0));
-      rect(c, W, x, top, 1, bottom - top);
-      if (phase === 2 && k % 2) peaks.push([x, top]);
-    }
-    for (const [x, y] of peaks) { rect(c, C.yellow, x - 1, y - 6, 3, 3); line(c, '#806000', x, y - 3, x, y - 1); }
-    // eyes darting sideways (X eyes when hurt)
-    const look = f === 1 ? 2 : -1;
-    for (const ex of [cx - 8, cx + 4]) {
-      if (f === 2) ouch(c, ex, cy - 3);
-      else { rect(c, B, ex - 1, cy - 4, 8, 8); rect(c, W, ex, cy - 3, 6, 6); rect(c, B, ex + 2 + look, cy - 1, 2, 3); }
-    }
-    // wobbly mouth
-    [[0, 0], [1, 1], [2, 0], [3, 1], [4, 0], [5, 1], [6, 0]].forEach(([dx, dy]) => rect(c, B, cx - 3 + dx, cy + 7 + dy, 1, 1));
-    // sweat drop
-    disc(c, C.cyan, cx + rx - 2, cy - 6 + (f ? 3 : 0), 2, 3);
-    // stubby feet
-    rect(c, W, cx - 12, cy + ry - 1, 7, 4); rect(c, W, cx + 5, cy + ry - 1, 7, 4); rect(c, B, cx - 12, cy + ry, 7, 1); rect(c, B, cx + 5, cy + ry, 7, 1);
-    // clutching a flashcard
-    thick(c, W, cx - rx + 2, cy + 2, cx - rx - 6, cy + 6 - f);
-    rect(c, W, cx - rx - 13, cy + 1 - f, 9, 11); rect(c, B, cx - rx - 11, cy + 4 - f, 5, 1); rect(c, B, cx - rx - 11, cy + 7 - f, 4, 1);
-  });
-
-  // LEAKAGE: a sly hourglass whose sand flows UP, from the future into the past.
-  enemyTex(scene, 'enemy-leakage', (c, f) => {
-    const cx = 32;
-    rect(c, W, cx - 16, 4, 32, 5); rect(c, B, cx - 14, 6, 28, 1);
-    rect(c, W, cx - 16, 55, 32, 5); rect(c, B, cx - 14, 57, 28, 1);
-    rect(c, W, cx - 15, 9, 2, 46); rect(c, W, cx + 13, 9, 2, 46);
-    for (let y = 9; y < 55; y++) {
-      const t = Math.abs(y - 32) / 23;
-      const hw = Math.max(2, Math.round(12 * t + 1));
-      rect(c, W, cx - hw - 1, y, 1, 1);
-      rect(c, W, cx + hw, y, 1, 1);
-    }
-    // sand in the bottom bulb, and a stream rising through the neck into the top bulb
-    for (let y = 44; y < 55; y++) { const hw = Math.round(12 * ((y - 32) / 23)); rect(c, C.cyan, cx - hw, y, hw * 2, 1); }
-    for (let y = 22 + f * 2; y < 44; y += 4) rect(c, C.cyan, cx - 1, y, 2, 2);
-    for (let y = 10; y < 14; y++) rect(c, C.cyan, cx - 9 + (y - 10), y, 18 - 2 * (y - 10), 1);
-    // sly face on the top bulb (X eyes when hurt)
-    if (f === 2) { ouch(c, cx - 8, 16, W); ouch(c, cx + 3, 16, W); }
-    else { rect(c, W, cx - 8, 18, 5, 2); rect(c, W, cx + 3, 18, 5, 2); rect(c, B, cx - 7, 19, 3, 1); rect(c, B, cx + 4, 19, 3, 1); }
-    [[0, 0], [1, 1], [2, 1], [3, 1], [4, 1], [5, 0]].forEach(([dx, dy]) => rect(c, W, cx - 3 + dx, 24 + dy, 1, 1));
-    // crack and drips
-    line(c, W, cx + 9, 14, cx + 11, 17); line(c, W, cx + 11, 17, cx + 9, 20);
-    disc(c, C.cyan, cx + 17, 22 + (f ? 6 : 0), 1.5, 2.5);
-    disc(c, C.cyan, cx + 18, 34 + (f ? 6 : 0), 1.5, 2.5);
-    // arm holding an "A+" answer sheet
-    thick(c, W, cx - 15, 30, cx - 22, 26 - f);
-    rect(c, W, cx - 31, 18 - f, 11, 13);
-    drawGrid(c, ['.#..', '#.#.', '###.', '#.#.'], { '#': B }, cx - 29, 21 - f);
-    drawGrid(c, ['.#.', '###', '.#.'], { '#': B }, cx - 25, 22 - f);
-  });
-
-  // EXPLODING GRADIENT: a furious little vector with a nabla on its belly; its arrows keep growing.
-  enemyTex(scene, 'enemy-gradient', (c, f) => {
-    const cx = 32, cy = 32, r = 13 + f;
-    for (let k = 0; k < 8; k++) {
-      const a = (k / 8) * Math.PI * 2 + Math.PI / 8;
-      const len = r + 9 + f * 4 + (k % 2) * 3;
-      const ex = cx + Math.cos(a) * len, ey = cy + Math.sin(a) * len;
-      thick(c, W, cx + Math.cos(a) * (r - 2), cy + Math.sin(a) * (r - 2), ex, ey);
-      const hx = Math.cos(a + 2.6) * 4, hy = Math.sin(a + 2.6) * 4, gx = Math.cos(a - 2.6) * 4, gy = Math.sin(a - 2.6) * 4;
-      line(c, C.orange, ex, ey, ex + hx, ey + hy);
-      line(c, C.orange, ex, ey, ex + gx, ey + gy);
-    }
-    disc(c, W, cx, cy, r);
-    // nabla on the belly
-    for (let i = 0; i < 6; i++) rect(c, C.orange, cx - 5 + i, cy + 4 + i, 11 - 2 * i, 1);
-    rect(c, W, cx - 3, cy + 5, 7, 1);
-    // angry brows, eyes, gritted teeth (X eyes when hurt)
-    line(c, B, cx - 9, cy - 8, cx - 3, cy - 5); line(c, B, cx + 9, cy - 8, cx + 3, cy - 5);
-    if (f === 2) { ouch(c, cx - 8, cy - 5); ouch(c, cx + 3, cy - 5); }
-    else { rect(c, B, cx - 7, cy - 4, 3, 3); rect(c, B, cx + 4, cy - 4, 3, 3); }
-    rect(c, B, cx - 6, cy + 1, 12, 3); for (let i = 0; i < 6; i++) rect(c, W, cx - 5 + i * 2, cy + 1 + (i % 2), 1, 1);
-    if (f) { line(c, C.orange, cx + r - 3, cy - 6, cx + r + 1, cy - 9); line(c, C.orange, cx - r + 3, cy + 6, cx - r - 1, cy + 9); }
-  });
-  // THE LEADERBOARD (boss): a towering scoreboard with a face, a crown of score-ticks and two foam "#1" hands
-  enemyTex(scene, 'enemy-board', (c, f) => {
-    const Y = '#ffd23a', G2 = '#5a5a68';
-    // foam-finger hands, waving
-    const hand = (x: number, y: number) => { rect(c, B, x - 1, y - 1, 12, 16); rect(c, W, x, y, 10, 14); rect(c, B, x + 3, y - 8, 4, 9); rect(c, W, x + 4, y - 7, 2, 7); drawGrid(c, ['.#', '##', '.#', '.#'], { '#': B }, x + 4, y + 4); };
-    hand(2, 30 + (f === 1 ? -3 : 0));
-    hand(68, 30 + (f === 1 ? 0 : -3));
-    // the board
-    rect(c, W, 12, 6, 56, 48); rect(c, B, 14, 8, 52, 44);
-    // score rows (they reshuffle every frame)
-    const rows = f === 1 ? [40, 22, 34, 14] : f === 2 ? [10, 10, 10, 10] : [34, 40, 22, 28];
-    rows.forEach((w, i) => {
-      const y = 26 + i * 6;
-      rect(c, i === 0 ? Y : G2, 17, y, 4, 3);
-      rect(c, i === 0 ? Y : W, 23, y, w, 3);
-    });
-    // face across the top of the board
-    if (f === 2) { ouch(c, 24, 12, W); ouch(c, 50, 12, W); }
-    else { rect(c, W, 22, 12, 9, 7); rect(c, W, 49, 12, 9, 7); rect(c, B, 25 + (f ? 2 : 0), 14, 3, 4); rect(c, B, 52 + (f ? 2 : 0), 14, 3, 4); line(c, W, 21, 10, 30, 12); line(c, W, 59, 10, 50, 12); }
-    // crown of score ticks
-    for (let i = 0; i < 5; i++) rect(c, Y, 20 + i * 10, 2 - (i % 2) * 2, 4, 5);
-    // stand
-    rect(c, W, 36, 54, 8, 6); rect(c, W, 26, 59, 28, 3);
-  }, 80, 64);
-  gridTex(scene, 'att-eye', ['..kkkkkkk..', '.kwwwwwwwk.', 'kwwwkkkwwwk', 'kwwkrrrkwwk', 'kwwwkkkwwwk', '.kwwwwwwwk.', '..kkkkkkk..'], { k: '#000000', w: '#ffffff', r: '#ff2a2a' });
-  // bullets
-  canvasTex(scene, 'bone', 6, 6, (c) => { rect(c, '#ffffff', 1, 0, 4, 6); rect(c, '#ffffff', 0, 0, 6, 2); rect(c, '#ffffff', 0, 4, 6, 2); });
-  canvasTex(scene, 'bone-shaft', 2, 2, (c) => rect(c, '#ffffff', 0, 0, 2, 2));
-  gridTex(scene, 'drop', ['..#..', '.###.', '#####', '#####', '.###.'], { '#': C.cyan });
-  gridTex(scene, 'pellet', ['.##.', '####', '####', '.##.'], { '#': '#ffffff' });
-  gridTex(scene, 'pellet-hot', ['.##.', '####', '####', '.##.'], { '#': C.orange });
 }

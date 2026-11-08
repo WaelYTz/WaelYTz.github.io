@@ -8,6 +8,7 @@ import { TitleScene } from './scenes/Title';
 import { NamingScene } from './scenes/Naming';
 import { WorldScene } from './scenes/World';
 import { UIScene } from './scenes/UI';
+import { game as G } from './core/state';
 
 document.documentElement.classList.remove('js-off');
 input.init();
@@ -42,4 +43,4 @@ window.addEventListener('orientationchange', () => setTimeout(refit, 200));
 game.events.once(Phaser.Core.Events.READY, refit);
 
 // Expose a tiny debug hook only when asked for (used by the screenshot tests): /?dev
-if (new URLSearchParams(location.search).has('dev')) (window as unknown as { __game: Phaser.Game }).__game = game;
+if (new URLSearchParams(location.search).has('dev')) Object.assign(window, { __game: game, __G: G, __input: input });

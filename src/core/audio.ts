@@ -5,7 +5,7 @@ import { loadSettings, saveSettings } from './save';
 type Wave = 'square' | 'triangle' | 'sawtooth' | 'pulse25' | 'pulse12' | 'noise';
 export type Sfx =
   | 'move' | 'select' | 'back' | 'save' | 'hit' | 'graze' | 'door' | 'secret' | 'alert' | 'heal' | 'error' | 'buy'
-  | 'slash' | 'spare' | 'reset' | 'step' | 'build';
+  | 'slash' | 'spare' | 'reset' | 'step' | 'build' | 'win' | 'solve' | 'dust' | 'spikes' | 'squeak' | 'push' | 'toggle';
 export type Voice = 'narrator' | 'wael' | 'shop' | 'mirror' | 'bot' | 'enemy' | 'pip' | 'hoot' | 'knight' | 'keeper' | 'tiny';
 
 const NOTE: Record<string, number> = { C: 0, 'C#': 1, Db: 1, D: 2, 'D#': 3, Eb: 3, E: 4, F: 5, 'F#': 6, Gb: 6, G: 7, 'G#': 8, Ab: 8, A: 9, 'A#': 10, Bb: 10, B: 11 };
@@ -145,6 +145,24 @@ class AudioEngine {
       case 'reset': this.tone('square', 600, t, 0.3, 0.2, B, 90); break;
       case 'step': this.tone('noise', 5000, t, 0.02, 0.05, B); break;
       case 'build': seq('pulse12', ['E5', 'G5'], 0.04, 0.05, 0.12); break;
+      // a short victory fanfare: rising arpeggio, then a held major chord over a low root
+      case 'win':
+        seq('pulse25', ['G4', 'C5', 'E5', 'G5', 'C6'], 0.075, 0.1, 0.2);
+        seq('pulse12', ['E5', 'G5', 'C6', 'E6', 'G6'], 0.075, 0.08, 0.08);
+        this.tone('pulse25', freq('E6'), t + 0.42, 0.55, 0.16, B);
+        this.tone('pulse25', freq('C6'), t + 0.42, 0.6, 0.18, B);
+        this.tone('triangle', freq('C3'), t + 0.42, 0.65, 0.28, B);
+        break;
+      // a puzzle clicks into place
+      case 'solve':
+        seq('pulse25', ['D5', 'F#5', 'A5', 'D6'], 0.06, 0.09, 0.18);
+        this.tone('triangle', freq('A5'), t + 0.26, 0.4, 0.2, B, freq('D6'));
+        break;
+      case 'dust': this.tone('noise', 600, t, 0.7, 0.18, B); this.tone('square', 400, t, 0.5, 0.08, B, 50); break;
+      case 'spikes': this.tone('noise', 2400, t, 0.08, 0.2, B); this.tone('square', 160, t, 0.1, 0.12, B, 90); break;
+      case 'squeak': this.tone('pulse25', 1200, t, 0.09, 0.14, B, 1900); this.tone('pulse25', 1700, t + 0.1, 0.08, 0.1, B, 1300); break;
+      case 'push': this.tone('noise', 900, t, 0.06, 0.08, B); break;
+      case 'toggle': this.tone('pulse12', 1568, t, 0.04, 0.1, B); this.tone('pulse12', 2093, t + 0.04, 0.05, 0.08, B); break;
     }
   }
 

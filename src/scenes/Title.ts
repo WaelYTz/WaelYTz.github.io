@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { label, textW } from '../core/text';
+import { label, textW, fitLabel } from '../core/text';
 import { audio } from '../core/audio';
 import { input } from '../core/input';
 import { clearSave, fmtTime } from '../core/save';
@@ -41,7 +41,7 @@ export class TitleScene extends Phaser.Scene {
       label(this, x + 26, y + 22, s.name.slice(0, 8), 'w', 3);
       label(this, x + w / 2 + 14, y + 22, `LV ${s.lv}`, 'w', 3, 'c');
       label(this, x + w - 26, y + 22, fmtTime(s.playMs), 'w', 3, 'r');
-      label(this, x + 26, y + 62, ROOMS[s.room]?.name ?? 'Entrance Hall', 'w', 3);
+      fitLabel(this, x + 26, y + 62, ROOMS[s.room]?.name ?? 'The Crossroads', w - 110, 'w', 3);
       label(this, x + w - 26, y + 66, `♥ ${s.secrets.length}/${SECRET_COUNT}`, 'g', 2, 'r');
       this.optY = y + 108;
       this.optX = [x + 76, x + 290];

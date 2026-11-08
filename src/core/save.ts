@@ -53,8 +53,11 @@ export function loadSave(): SaveData | null {
   const s = read<SaveData>(KEY);
   if (!s || s.v !== 1 || typeof s.name !== 'string') return null;
   const merged = { ...freshSave(s.name), ...s };
+  // the old Mirror room became the Cluster Garden
+  if (merged.room === 'mirror') { merged.room = 'garden'; merged.x = -1; merged.y = -1; }
+  merged.visited = merged.visited.map((r) => (r === 'mirror' ? 'garden' : r));
   // saves from the first version of the map pointed at rooms that no longer exist
-  if (!['start', 'hall', 'crossroads', 'memorial', 'ruins1', 'ruins2', 'ruins3', 'lab', 'town', 'shop', 'library', 'hidden', 'records', 'mirror', 'summit', 'exit'].includes(merged.room)) {
+  if (!['start', 'hall', 'crossroads', 'memorial', 'ruins1', 'ruins2', 'ruins3', 'lab', 'town', 'shop', 'house', 'hallway', 'library', 'hidden', 'records', 'garden', 'summit', 'exit'].includes(merged.room)) {
     merged.room = 'crossroads';
     merged.x = -1;
     merged.y = -1;
@@ -74,9 +77,10 @@ export function clearSave(): void {
 }
 
 export type TextSpeed = 'normal' | 'fast' | 'instant';
-export interface Settings { muted: boolean; textSpeed: TextSpeed; }
+/** waelAi: '' = not asked yet, 'on' = wake WAEL's AI brain when you talk to him, 'off' = keep the written answers. */
+export interface Settings { muted: boolean; textSpeed: TextSpeed; waelAi: '' | 'on' | 'off'; }
 export function loadSettings(): Settings {
-  return { muted: true, textSpeed: 'normal', ...(read<Partial<Settings>>(SKEY) ?? {}) };
+  return { muted: true, textSpeed: 'normal', waelAi: '', ...(read<Partial<Settings>>(SKEY) ?? {}) };
 }
 export function saveSettings(s: Settings): void {
   write(SKEY, s);

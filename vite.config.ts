@@ -28,13 +28,26 @@ function contentPages(): Plugin {
   };
 }
 
+// transformers.js (WAEL's smart match) fetches the ONNX runtime from jsDelivr, compressed; the 27 MB local copy that
+// gets pulled into the bundle is never used, so it is left out of the site.
+function dropUnusedOrtWasm(): Plugin {
+  return {
+    name: 'drop-unused-ort-wasm',
+    generateBundle(_o, bundle) {
+      for (const k of Object.keys(bundle)) if (/ort-wasm[^/]*\.wasm$/.test(k)) delete bundle[k];
+    },
+  };
+}
+
 export default defineConfig({
   base: '/',
-  plugins: [contentPages()],
+  plugins: [contentPages(), dropUnusedOrtWasm()],
   resolve: {
     // Phaser without Matter physics (we do our own tile collision): ~110 KB smaller.
     alias: { phaser: 'phaser/dist/phaser-arcade-physics.min.js' },
   },
+  // WAEL's optional AI brain runs in a module worker (see src/world/mirror/llm.ts)
+  worker: { format: 'es' },
   build: {
     target: 'es2020',
     assetsInlineLimit: 0,

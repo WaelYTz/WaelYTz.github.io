@@ -6,10 +6,10 @@ import { audio } from '../core/audio';
 import { game as G, MAIN_ROOMS } from '../core/state';
 import { REDUCED, COARSE } from '../core/env';
 import { THEMES } from '../core/palette';
-import { NPCS } from '../content/npcs';
+import { NPCS, type Npc } from '../content/npcs';
 import { COSMETICS } from '../core/cast';
-import { label } from '../core/text';
-import { ROOMS, type RoomDef, type Ent } from '../world/rooms';
+import { label, textW } from '../core/text';
+import { ROOMS, type RoomDef, type Ent, type NpcMove } from '../world/rooms';
 import type { Entity, Rect, RoomLogic, WorldApi } from '../world/types';
 import { projectById } from '../content/projects';
 import { COMPETITIONS, WAR } from '../content/lore';
@@ -28,7 +28,8 @@ const LOGIC: Record<string, () => Promise<{ default: RoomLogic }>> = {
   hidden: () => import('../world/logic/hidden'),
   memorial: () => import('../world/logic/memorial'),
   shop: () => import('../world/logic/shop'),
-  mirror: () => import('../world/logic/mirror'),
+  home: () => import('../world/logic/home'),
+  garden: () => import('../world/logic/garden'),
   exit: () => import('../world/logic/exit'),
 };
 
@@ -36,7 +37,26 @@ const WALK = 92;
 const RUN = 150;
 const HB = { w: 9, h: 8 }; // player hitbox, centred on (x, y)
 
-const isWalkChar = (c: string) => '.,:=%";'.includes(c) || /[0-9a-zA-Z]/.test(c);
+const isWalkChar = (c: string) => '.,:=%";+'.includes(c) || /[0-9a-zA-Z]/.test(c);
+
+/** An NPC that walks around on its own (wander, patrol a path, follow a friend, or shyly keep its distance). */
+interface Mover {
+  e: Entity;
+  npc: Npc;
+  move: NpcMove;
+  home: { x: number; y: number };
+  path: { x: number; y: number }[];
+  pi: number;
+  at: number;
+  target: { x: number; y: number } | null;
+  wait: number;
+  blocked: number;
+  speed: number;
+  r: number;
+  lead?: string;
+  walkT: number;
+  dir: 'down' | 'up' | 'side';
+}
 
 interface InitData { room: string; spawn?: string; x?: number; y?: number; intro?: boolean; ask?: string; }
 
@@ -66,6 +86,9 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
   private hinted = false;
   private encCooldown = 0;
   private startedAt = 0;
+  private movers: Mover[] = [];
+  private tapGoal: { tx: number; ty: number } | null = null;
+  private reflection: { soul: Phaser.GameObjects.Image; cos: Phaser.GameObjects.Image | null; glass: Rect } | null = null;
 
   constructor() {
     super('world');
@@ -91,6 +114,9 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
     this.transitioning = false;
     this.logic = null;
     this.crown = null;
+    this.movers = [];
+    this.tapGoal = null;
+    this.reflection = null;
   }
 
   // ───────────────────────── map ─────────────────────────
@@ -115,7 +141,8 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
       case ' ': return T.VOID;
       case ',': return T.FLOOR2;
       case '"':
-      case ';': return T.FLOOR;
+      case ';':
+      case '+': return T.FLOOR;
       case ':': return T.CARPET;
       case '=': return T.PLANK;
       case 'x': return T.BROKEN;
@@ -208,7 +235,7 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
     this.ui.banner(r.name);
     if (fresh && MAIN_ROOMS.every((m) => G.s.visited.includes(m))) G.emit('toast', '* You have seen every room. The exit awaits.');
 
-    if (!this.hinted && this.roomId === 'entrance' && G.playMs() < 60000) {
+    if (!this.hinted && this.roomId === 'hall' && G.playMs() < 120000) {
       this.ui.hint(COARSE ? 'TAP TO WALK · Z: TALK · C: MENU' : 'ARROWS/WASD: MOVE · Z: TALK · C: MENU · CLICK TO WALK');
     }
 
@@ -238,11 +265,11 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
         '* Go on, {y}{name}{w}. Take your time.',
       ]);
     }
-    if (this.data0.ask && this.roomId === 'mirror') {
+    if (this.data0.ask && this.roomId === 'house') {
       const ask = this.data0.ask;
       this.data0.ask = undefined;
-      const mirror = this.ents.find((e) => e.def.t === 'mirror');
-      if (mirror) await this.interactWith(mirror, ask);
+      const wael = this.ents.find((e) => e.def.t === 'npc' && e.def.id === 'wael');
+      if (wael) await this.interactWith(wael, ask);
     }
   }
 
@@ -299,7 +326,7 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
 
   private spawnEntity(def: Ent, key: string, tx: number, ty: number) {
     const e: Entity = { def, key, tx, ty, data: {} };
-    const X = tx * TILE, Y = ty * TILE, cx = X + 8, by = Y + 16;
+    const X = tx * TILE + (def.ox ?? 0), Y = ty * TILE, cx = X + 8, by = Y + 16;
     const tileRect = { x: X, y: Y, w: 16, h: 16 };
     const small = { x: X + 2, y: Y + 6, w: 12, h: 10 };
     e.hit = { x: X - 1, y: Y - 1, w: 18, h: 18 };
@@ -394,10 +421,38 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
           if (!REDUCED) this.tweens.add({ targets: e.sprite, alpha: 0.35, duration: 900, yoyo: true, repeat: -1 });
         } else e.hit = undefined;
         break;
-      case 'mirror':
-        e.sprite = this.img('mirror', X + 16, by);
-        this.addSolid(e, { x: X, y: Y + 6, w: 32, h: 10 });
-        e.hit = { x: X - 2, y: Y - 2, w: 36, h: 20 };
+      case 'reflect': {
+        // a tall mirror leaning on the wall; the SOUL's reflection is drawn inside its glass
+        e.sprite = this.img('wall-mirror', X + 16, by);
+        this.addSolid(e, { x: X + 2, y: by - 10, w: 28, h: 10 });
+        e.hit = { x: X - 2, y: by - 44, w: 36, h: 48 };
+        const glass = { x: X + 5, y: by - 40 + 5, w: 22, h: 29 };
+        const m = this.make.graphics({}, false).fillStyle(0xffffff).fillRect(glass.x, glass.y, glass.w, glass.h);
+        const mask = m.createGeometryMask();
+        const soul = this.add.image(0, 0, 'soul').setScale(2).setAlpha(0.75).setDepth(by + 1).setMask(mask).setVisible(false);
+        let cos: Phaser.GameObjects.Image | null = null;
+        const id = G.s.wear;
+        if (id && G.hasCos(id) && this.textures.exists('cos-' + id)) cos = this.add.image(0, 0, 'cos-' + id).setScale(2).setAlpha(0.75).setDepth(by + 2).setMask(mask).setVisible(false);
+        this.reflection = { soul, cos, glass };
+        break;
+      }
+      case 'stone':
+        // pushed around by the room logic (the Cluster Garden)
+        e.sprite = this.add.image(cx, Y + 8, 'stone-' + def.i).setDepth(by);
+        e.data.x = cx;
+        e.data.y = Y + 8;
+        e.hit = { x: X - 2, y: Y - 2, w: 20, h: 20 };
+        break;
+      case 'spikes': {
+        const down = !!G.flag(def.flag);
+        e.sprite = this.add.sprite(X, Y, 'spikes', down ? 1 : 0).setOrigin(0).setDepth(-4);
+        if (!down) this.addSolid(e, { x: X, y: Y, w: 16, h: 16 });
+        e.hit = down ? undefined : { x: X - 1, y: Y - 1, w: 18, h: 18 };
+        break;
+      }
+      case 'button':
+        e.sprite = this.add.sprite(X, Y, 'prop-button', 0).setOrigin(0).setDepth(-4);
+        e.hit = { x: X - 1, y: Y - 1, w: 18, h: 18 };
         break;
       case 'terminal':
         e.sprite = this.img('terminal', cx, by);
@@ -438,32 +493,46 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
       case 'npc': {
         const npc = NPCS[def.id];
         if (!npc) break;
-        const s = this.add.sprite(cx, by, npc.tex, 0).setOrigin(0.5, 1).setDepth(by);
-        const frames = this.textures.get(npc.tex).frameTotal - 1;
-        if (!REDUCED && frames > 1) {
-          let f = 0;
-          this.time.addEvent({ delay: def.id === 'pip' ? 160 : 420 + (tx % 3) * 60, loop: true, callback: () => { f = (f + 1) % frames; s.setFrame(f); } });
-        }
-        if (!REDUCED && (def.id === 'pip' || def.id === 'nibble')) this.tweens.add({ targets: s, y: by - 2, duration: 500, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+        const s = this.add.sprite(cx, by, npc.tex, npc.anim?.idle[0] ?? 0).setOrigin(0.5, 1).setDepth(by);
         e.sprite = s;
-        this.addSolid(e, { x: X + 1, y: Y + 6, w: 14, h: 10 });
-        e.hit = { x: X - 2, y: Y - 4, w: 20, h: 22 };
+        e.data.x = cx;
+        e.data.y = by;
+        e.data.ct = 1500 + Math.random() * 3000;
+        const frames = this.textures.get(npc.tex).frameTotal - 1;
+        if (npc.wakes) s.setFrame(1);
+        else if (!REDUCED && !npc.anim && frames > 1) {
+          let f = 0;
+          this.time.addEvent({ delay: def.id === 'pip' ? 160 : 420 + (tx % 3) * 60, loop: true, callback: () => { if (s.active) { f = (f + 1) % frames; s.setFrame(f); } } });
+        }
+        this.placeNpc(e);
+        const move = def.move ?? 'still';
+        if (move !== 'still') {
+          const path = (def.path ?? []).map(([px, py]) => ({ x: px * TILE + 8, y: py * TILE + 16 }));
+          this.movers.push({
+            e, npc, move, home: { x: cx, y: by }, path, pi: path.length > 1 ? 1 : 0, at: 0, target: null,
+            wait: move === 'patrol' && def.id === 'wael' ? 4000 : 600 + Math.random() * 1200, blocked: 0,
+            speed: def.speed ?? 24, r: def.r ?? 2, lead: def.lead, walkT: 0, dir: 'down',
+          });
+        }
         break;
       }
       case 'deco': {
         const tex = this.textures.get(def.key);
         const frames = tex.frameTotal - 1;
         const w = (def.w ?? 1) * TILE;
-        const s = def.frames && frames > 1 ? this.add.sprite(X + w / 2, by + (def.dy ?? 0), def.key, 0) : this.add.image(X + w / 2, by + (def.dy ?? 0), def.key);
+        const asSprite = (def.frames && frames > 1) || def.frame !== undefined;
+        const s = asSprite ? this.add.sprite(X + w / 2, by + (def.dy ?? 0), def.key, def.frame ?? 0) : this.add.image(X + w / 2, by + (def.dy ?? 0), def.key);
         s.setOrigin(0.5, def.wall ? 0.5 : 1).setDepth(def.wall ? -3 : def.dy !== undefined ? -2 : by);
-        if (def.wall) s.setPosition(X + w / 2, Y + 8);
+        if (def.wall) s.setPosition(X + w / 2, Y + 8 + (def.dy ?? 0));
         if (def.frames && frames > 1 && !REDUCED && s instanceof Phaser.GameObjects.Sprite) {
           let f = 0;
           this.time.addEvent({ delay: 260 + (tx % 4) * 40, loop: true, callback: () => { f = (f + 1) % def.frames!; s.setFrame(f); } });
         }
         e.sprite = s;
-        if (def.solid) this.addSolid(e, { x: X + 1, y: Y + 4, w: w - 2, h: 12 });
-        e.hit = def.lines ? { x: X - 1, y: Y - 1, w: w + 2, h: 18 } : undefined;
+        const sh = def.sh ?? 12;
+        if (def.solid) this.addSolid(e, { x: X + 1, y: by - sh, w: w - 2, h: sh });
+        const hh = Math.max(18, sh + 6);
+        e.hit = def.lines ? { x: X - 1, y: def.wall ? Y - 1 : by - hh + 2, w: w + 2, h: def.wall ? 18 : hh } : undefined;
         break;
       }
       case 'cos':
@@ -498,6 +567,209 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
     if (!id || !G.hasCos(id) || !this.textures.exists('cos-' + id)) return;
     this.cosDy = COSMETICS[id]?.dy ?? -8;
     this.crown = this.add.image(this.player.x, this.player.y + this.cosDy, 'cos-' + id).setScale(2).setDepth(this.player.y + 7);
+  }
+
+  /** A short word or symbol above an entity's head ("!", "?", "♪"). */
+  emote(e: Entity, text: string, ms = 800, color = 'w') {
+    const x = (e.data.x as number | undefined) ?? e.tx * TILE + 8;
+    const y = ((e.data.y as number | undefined) ?? e.ty * TILE + 16) - (e.sprite?.displayHeight ?? 16) - 8;
+    const t = label(this, Math.round(x), Math.round(y), text, color, 1, 'c').setDepth(9600);
+    if (!REDUCED) this.tweens.add({ targets: t, y: y - 3, duration: 160, yoyo: true });
+    this.time.delayedCall(ms, () => t.destroy());
+  }
+
+  /** Raise or drop every spike tied to a puzzle flag. */
+  setSpikes(flag: string, down: boolean) {
+    for (const e of this.ents) {
+      if (e.def.t !== 'spikes' || e.def.flag !== flag) continue;
+      (e.sprite as Phaser.GameObjects.Sprite | undefined)?.setFrame(down ? 1 : 0);
+      const X = e.tx * TILE + (e.def.ox ?? 0), Y = e.ty * TILE;
+      this.addSolid(e, down ? undefined : { x: X, y: Y, w: 16, h: 16 });
+      e.hit = down ? undefined : { x: X - 1, y: Y - 1, w: 18, h: 18 };
+    }
+    audio.sfx('spikes');
+  }
+
+  // ───────────────────────── NPCs that walk around ─────────────────────────
+  /** Position an NPC's sprite, collision box and talk area from its feet position. */
+  private placeNpc(e: Entity, hop = 0) {
+    const x = e.data.x as number, y = e.data.y as number;
+    const id = (e.def as { id?: string }).id;
+    const bob = !REDUCED && (id === 'pip' || id === 'nibble') ? Math.round(Math.sin(this.time.now / 260) * 1.5) : 0;
+    e.sprite?.setPosition(Math.round(x), Math.round(y) + hop + bob).setDepth(y);
+    this.addSolid(e, { x: x - 7, y: y - 10, w: 14, h: 10 });
+    e.hit = { x: x - 10, y: y - 22, w: 20, h: 24 };
+  }
+  private npcFree(e: Entity, x: number, y: number) {
+    const r = { x: x - 6, y: y - 8, w: 12, h: 8 };
+    if (this.solidAt(r, e)) return false;
+    const p = this.box(this.player.x, this.player.y);
+    if (r.x < p.x + p.w + 2 && r.x + r.w + 2 > p.x && r.y < p.y + p.h + 2 && r.y + r.h + 2 > p.y) return false;
+    // stay off doorways and encounter tiles
+    const c = this.tile(Math.floor(x / TILE), Math.floor((y - 1) / TILE));
+    if (/[0-9]/.test(c)) return false;
+    return true;
+  }
+  private nextTarget(m: Mover): { x: number; y: number } | null {
+    const d = m.e.data as { x: number; y: number };
+    if (m.move === 'patrol' && m.path.length) return m.path[m.pi % m.path.length];
+    if (m.move === 'follow') {
+      const lead = this.ents.find((k) => k.def.t === 'npc' && k.def.id === m.lead);
+      if (!lead) return null;
+      const lx = lead.data.x as number, ly = lead.data.y as number;
+      const dist = Math.hypot(lx - d.x, ly - d.y);
+      if (dist < 24) return null;
+      // aim a little behind the leader
+      return { x: lx - ((lx - d.x) / dist) * 20, y: ly - ((ly - d.y) / dist) * 20 };
+    }
+    if (m.move === 'shy') return Math.hypot(m.home.x - d.x, m.home.y - d.y) > 4 ? { ...m.home } : null;
+    for (let i = 0; i < 8; i++) {
+      const tx = Math.floor(m.home.x / TILE) + Math.round((Math.random() * 2 - 1) * m.r);
+      const ty = Math.floor((m.home.y - 1) / TILE) + Math.round((Math.random() * 2 - 1) * m.r);
+      const x = tx * TILE + 8, y = ty * TILE + 16;
+      if (this.walkable(tx, ty) && this.npcFree(m.e, x, y)) return { x, y };
+    }
+    return null;
+  }
+  private updateMovers(dtMs: number, busy: boolean) {
+    for (const m of this.movers) {
+      const e = m.e;
+      if (!e.sprite?.active || e.data.noAuto) continue;
+      const d = e.data as { x: number; y: number };
+      const s = e.sprite as Phaser.GameObjects.Sprite;
+      const pdx = this.player.x - d.x, pdy = this.player.y - (d.y - 6);
+      const pd = Math.hypot(pdx, pdy);
+      let vx = 0, vy = 0;
+      if (!busy) {
+        if (m.move === 'shy' && pd < 36) {
+          // scoot away from the SOUL
+          const k = 22 / (pd || 1);
+          const cand = { x: d.x - pdx * k, y: d.y - pdy * k };
+          // never too far from home (MOSS stays out of the flower patches)
+          if (Math.hypot(cand.x - m.home.x, cand.y - m.home.y) < 40 && this.npcFree(e, cand.x, cand.y)) { m.target = cand; m.wait = 0; }
+        }
+        if (pd < 28 && m.move !== 'shy' && m.move !== 'follow') {
+          // stop and look at whoever came to say hi
+          m.wait = Math.max(m.wait, 700);
+          if (m.npc.anim) { m.dir = 'down'; s.setFlipX(false); }
+          else s.setFlipX((pdx < 0) === ((m.npc.faces ?? 'r') === 'r'));
+        } else if (m.wait > 0) m.wait -= dtMs;
+        else {
+          if (!m.target) m.target = this.nextTarget(m);
+          if (!m.target && m.move !== 'follow') m.wait = 500 + Math.random() * 800;
+          if (m.target) {
+            const tx = m.target.x - d.x, ty = m.target.y - d.y;
+            const dist = Math.hypot(tx, ty);
+            const step = (m.speed * dtMs) / 1000;
+            const arrive = dist <= step;
+            const nx = arrive ? m.target.x : d.x + (tx / dist) * step, ny = arrive ? m.target.y : d.y + (ty / dist) * step;
+            if (this.npcFree(e, nx, ny)) {
+              d.x = nx;
+              d.y = ny;
+              vx = tx;
+              vy = ty;
+              m.blocked = 0;
+              if (arrive) {
+                m.target = null;
+                m.at = m.pi;
+                if (m.move === 'patrol') m.pi = (m.pi + 1) % Math.max(1, m.path.length);
+                m.wait = m.move === 'patrol' ? (m.npc.anim && m.at === 0 ? 6000 + Math.random() * 4000 : 700 + Math.random() * 900) : m.move === 'follow' ? 0 : 1400 + Math.random() * 2600;
+              }
+            } else if ((m.blocked += dtMs) > 900) {
+              m.blocked = 0;
+              m.wait = 300;
+              if (m.move !== 'patrol') m.target = null;
+            }
+          }
+        }
+      }
+      const moving = vx !== 0 || vy !== 0;
+      if (moving) {
+        m.dir = Math.abs(vx) > Math.abs(vy) ? 'side' : vy > 0 ? 'down' : 'up';
+        if (m.npc.anim) s.setFlipX(m.dir === 'side' && vx < 0);
+        else if (Math.abs(vx) > 0.5) s.setFlipX((vx < 0) === ((m.npc.faces ?? 'r') === 'r'));
+      }
+      m.walkT = moving ? m.walkT + dtMs : 0;
+      let hop = 0;
+      if (m.npc.anim) {
+        const a = m.npc.anim;
+        if (moving) {
+          const set = m.dir === 'side' ? a.side : m.dir === 'up' ? a.up : a.down;
+          s.setFrame(set[Math.floor(m.walkT / 150) % set.length]);
+        } else if (a.work && m.move === 'patrol' && m.at === 0 && m.wait > 0 && pd >= 28 && !busy) {
+          s.setFrame(a.work[Math.floor(this.time.now / 220) % a.work.length]);
+          s.setFlipX(false);
+        } else {
+          const blink = a.blink !== undefined && this.time.now % 3200 < 140;
+          s.setFrame(blink ? a.blink! : a.idle[0]);
+        }
+      } else if (moving && !REDUCED) hop = Math.floor(m.walkT / 130) % 2 ? -1 : 0;
+      this.placeNpc(e, hop);
+    }
+  }
+
+  /** Little bits of life: chatter bubbles, a "!" when you first walk up, sleepy owls, squeaky ducks. */
+  private updateCast(dtMs: number, busy: boolean) {
+    for (const e of this.ents) {
+      if (e.def.t !== 'npc' || !e.sprite?.active) continue;
+      const npc = NPCS[e.def.id];
+      if (!npc) continue;
+      const x = e.data.x as number, y = e.data.y as number;
+      const pd = Math.hypot(this.player.x - x, this.player.y - (y - 6));
+      if (!this.movers.some((m) => m.e === e) && !e.data.noAuto && (e.def.id === 'pip' || e.def.id === 'nibble')) this.placeNpc(e);
+      if (npc.wakes) (e.sprite as Phaser.GameObjects.Sprite).setFrame(pd < 56 || busy ? 0 : 1);
+      if (busy) continue;
+      if (npc.notice && !e.data.noticed && pd < 48) {
+        e.data.noticed = true;
+        this.emote(e, '!', 700, 'y');
+      }
+      if (npc.squeak) {
+        e.data.sq = ((e.data.sq as number | undefined) ?? 0) - dtMs;
+        if (pd < 17 && (e.data.sq as number) <= 0) {
+          e.data.sq = 1400;
+          audio.sfx('squeak');
+          if (!REDUCED) this.tweens.add({ targets: e.sprite, y: y - 4, duration: 90, yoyo: true });
+          this.emote(e, '♪', 600);
+        }
+      }
+      if (npc.chatter && pd < 110) {
+        e.data.ct = ((e.data.ct as number | undefined) ?? 3000) - dtMs;
+        const asleep = npc.wakes && pd >= 56;
+        if ((e.data.ct as number) <= 0 && !e.data.bubble) {
+          e.data.ct = 5500 + Math.random() * 5000;
+          const pool = npc.wakes ? npc.chatter.filter((c) => c.startsWith('zzz') === !!asleep) : npc.chatter;
+          const line = (pool.length ? pool : npc.chatter)[Math.floor(Math.random() * (pool.length || npc.chatter.length))].replace('{name}', G.name);
+          this.bubble(e, line);
+        }
+      }
+    }
+  }
+  private bubble(e: Entity, text: string) {
+    const c = this.add.container(0, 0).setDepth(9500);
+    const w = textW(text, 1) + 8;
+    const g = this.add.graphics().fillStyle(0xffffff).fillRoundedRect(-w / 2, -14, w, 12, 3).fillTriangle(-3, -2, 3, -2, 0, 2);
+    c.add([g, label(this, 0, -12, text, 'b', 1, 'c')]);
+    e.data.bubble = c;
+    const follow = () => {
+      const x = e.data.x as number, y = e.data.y as number;
+      c.setPosition(Math.round(x), Math.round(y - (e.sprite?.displayHeight ?? 16) - 2));
+    };
+    follow();
+    const ev = this.time.addEvent({ delay: 16, loop: true, callback: follow });
+    this.time.delayedCall(2200, () => { ev.remove(); c.destroy(); e.data.bubble = undefined; });
+  }
+
+  /** The SOUL's reflection in WAEL's hallway mirror. */
+  private updateReflection() {
+    const r = this.reflection;
+    if (!r) return;
+    const g = r.glass;
+    const below = this.player.y - (g.y + g.h);
+    const show = below > -4 && below < 90 && this.player.x > g.x - 20 && this.player.x < g.x + g.w + 20;
+    const x = Math.round(Phaser.Math.Clamp(this.player.x, g.x + 4, g.x + g.w - 4));
+    const y = Math.round(g.y + g.h - 7 - Math.min(14, below * 0.15));
+    r.soul.setVisible(show).setPosition(x, y);
+    r.cos?.setVisible(show).setPosition(x, y + this.cosDy);
   }
 
   // ───────────────────────── collisions ─────────────────────────
@@ -563,10 +835,13 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
       if (h && e.def.t !== 'ball' && wx >= h.x && wx < h.x + h.w && wy >= h.y - 8 && wy < h.y + h.h) { target = e; break; }
     }
     const goal = { tx: Math.floor(wx / TILE), ty: Math.floor(wy / TILE) };
+    const here = { tx: Math.floor(this.player.x / TILE), ty: Math.floor(this.player.y / TILE) };
+    if (!target && goal.tx === here.tx && goal.ty === here.ty && this.logic?.tapTile?.(this, goal.tx, goal.ty)) return;
     const path = this.findPath(goal, target);
     if (path) {
       this.path = path;
       this.pathTarget = target;
+      this.tapGoal = target ? null : goal;
       this.hideHint();
     }
   }
@@ -693,6 +968,19 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
         return;
       case 'sign':
         return this.say(d.lines);
+      case 'reflect': {
+        // the mirror at the end of WAEL's hallway
+        const wear = G.s.wear && G.hasCos(G.s.wear) ? COSMETICS[G.s.wear]?.name.toLowerCase() : '';
+        const n = ((e.data.n as number | undefined) ?? -1) + 1;
+        e.data.n = n;
+        G.setFlag('mirror');
+        if (n > 0 && wear) return this.say(`* Despite the ${wear}, it's still you.`);
+        return this.say("* Despite everything, it's still you.");
+      }
+      case 'stone':
+        return this.say('* A heavy rune stone. Walk into it to push it.');
+      case 'spikes':
+        return this.say(['* Sharp spikes block the way north.', '* They look like they will drop once the garden is happy.']);
       case 'screen':
         return this.say(['* Screens full of tiny cars. Every car is a data point.', '* Every data point is stamped with a time.']);
       case 'dyn':
@@ -894,19 +1182,28 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
       if (input.consume('menu')) {
         void import('./menus').then((m) => m.openMenu(this.ui, this));
       } else if (input.consume('confirm')) {
-        const e = this.probe() ?? this.nearby();
+        const e = this.probe();
         if (e) void this.interactWith(e);
+        else if (!this.logic?.confirm?.(this)) {
+          const n = this.nearby();
+          if (n) void this.interactWith(n);
+        }
       } else {
         // movement: keyboard / D-pad first, then the click path
         const ax = input.axis();
         let vx = ax.x, vy = ax.y;
-        if (vx || vy) this.path = [];
+        if (vx || vy) { this.path = []; this.tapGoal = null; }
         else if (this.path.length) {
           const wp = this.path[0];
           const dx = wp.x - this.player.x, dy = wp.y - this.player.y;
           const d = Math.hypot(dx, dy);
           if (d < 1.5) {
             this.path.shift();
+            if (!this.path.length && this.tapGoal) {
+              const g = this.tapGoal;
+              this.tapGoal = null;
+              this.logic?.tapTile?.(this, g.tx, g.ty);
+            }
             if (!this.path.length && this.pathTarget) {
               const t = this.pathTarget;
               this.pathTarget = null;
@@ -934,7 +1231,10 @@ export class WorldScene extends Phaser.Scene implements WorldApi {
       }
     }
     this.logic?.update?.(this, dtMs);
+    this.updateMovers(dtMs, busy);
+    this.updateCast(dtMs, busy);
     this.renderPlayer(dtMs);
+    this.updateReflection();
     this.updateCamera();
     // Z hint above the nearest interactable
     const near = !busy ? this.nearby() : null;

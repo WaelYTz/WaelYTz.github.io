@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import { buildFonts, buildSprites } from '../core/art';
 import { buildCast } from '../core/cast';
+import { buildExtras } from '../core/extras';
+import { buildProps } from '../core/props';
 import { game as G } from '../core/state';
 import { loadSave } from '../core/save';
 import { githubStats, profileEncounter } from '../core/remote';
@@ -17,6 +19,8 @@ export class BootScene extends Phaser.Scene {
     buildFonts(this);
     buildSprites(this);
     buildCast(this);
+    buildProps(this);
+    buildExtras(this);
     this.scene.launch('ui');
     // Public data, fetched in the background; failures are silent.
     void githubStats();

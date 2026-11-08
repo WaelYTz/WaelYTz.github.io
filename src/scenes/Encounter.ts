@@ -5,12 +5,15 @@ import { input } from '../core/input';
 import { audio } from '../core/audio';
 import { game as G } from '../core/state';
 import { REDUCED } from '../core/env';
-import { PixelText, parseRich, wrap, label, textW } from '../core/text';
-import { buildEnemies, gridTex, canvasTex } from '../core/art';
+import { PixelText, parseRich, wrap, label, textW, fitScale } from '../core/text';
+import { gridTex, canvasTex } from '../core/art';
+import { buildEnemies } from '../core/enemyArt';
 import { C } from '../core/palette';
 import { ENEMIES, type EnemyDef, type Pattern } from '../content/enemies';
 import { SKILLS } from '../content/lore';
 import { profileEncounter } from '../core/remote';
+
+type Ctx = CanvasRenderingContext2D;
 
 export type Result = 'spared' | 'fought' | 'fled' | 'died';
 
@@ -93,6 +96,7 @@ export class EncounterScene extends Phaser.Scene {
   private ptrDown = false;
   private ptr = { x: 0, y: 0 };
   private savedOnce = false;
+  private dens = 1;
 
   constructor() {
     super('encounter');
@@ -134,8 +138,13 @@ export class EncounterScene extends Phaser.Scene {
     const m = this.make.graphics({}, false);
     this.mask = m.createGeometryMask();
     this.bulG.setMask(this.mask);
-    this.events.on('update', () => {
-      m.clear().fillStyle(0xffffff).fillRect(this.box.x + 5, this.box.y + 5, this.box.w - 10, this.box.h - 10);
+    const redrawMask = () => m.clear().fillStyle(0xffffff).fillRect(this.box.x + 5, this.box.y + 5, this.box.w - 10, this.box.h - 10);
+    this.events.on('update', redrawMask);
+    // scene events outlive a restart: drop every per-fight listener when the fight ends
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.events.off('update', redrawMask);
+      this.events.removeAllListeners('dodge-over');
+      m.destroy();
     });
     this.heart = this.add.image(0, 0, 'soul-small').setScale(3).setVisible(false).setDepth(5);
 
@@ -177,35 +186,83 @@ export class EncounterScene extends Phaser.Scene {
 
   /** Attack target and slash frames, drawn once. */
   private buildFx() {
-    canvasTex(this, 'atk-target', 544, 112, (c) => {
-      for (let k = 0; k < 7; k++) {
-        const rx = 272 - k * 38, ry = 52 - k * 6;
-        c.strokeStyle = k % 2 ? '#2a2a2a' : '#5a5a5a';
-        c.lineWidth = 6;
-        c.beginPath(); c.ellipse(272, 56, rx, ry, 0, 0, Math.PI * 2); c.stroke();
+    // The FIGHT target: a pixel "lens" meter, drawn at 1x and shown at 2x. Bands get brighter towards the
+    // middle; the gold strip in the centre is a critical hit.
+    const TW = 279, TH = 60, MID = 139;
+    canvasTex(this, 'atk-target', TW, TH, (c) => {
+      const px = (x: number, y: number, col: string, h = 1) => { c.fillStyle = col; c.fillRect(x, y, 1, h); };
+      const band = (d: number) => (d < 0.058 ? ['#ffd23f', '#e0a91c'] : d < 0.3 ? ['#5ef0a0', '#3ddc84'] : d < 0.6 ? ['#2bb38a', '#1f9474'] : d < 0.88 ? ['#167a66', '#11604f'] : ['#0e4a40', '#0a3a32']);
+      let prev = '';
+      for (let x = 0; x < TW; x++) {
+        const d = Math.abs(x - MID) / MID;
+        const hh = Math.max(1, Math.round(26 * (1 - d * d)));
+        const top = 30 - hh, bot = 30 + hh;
+        px(x, top - 2, '#000000', bot - top + 5);
+        px(x, top - 1, '#ffffff', bot - top + 3);
+        const [hi, lo] = band(d);
+        for (let y = top; y <= bot; y++) px(x, y, (y - top) % 4 === 3 ? lo : hi);
+        // a thin dark seam where one band meets the next, so the zones read clearly
+        if (prev && prev !== hi) px(x, top, '#000000', bot - top + 1);
+        prev = hi;
       }
-      c.fillStyle = '#ffffff';
-      c.fillRect(268, 8, 8, 96);
-      c.fillStyle = '#000000';
-      c.fillRect(270, 10, 4, 92);
+      // the centre line
+      px(MID - 2, 0, '#000000', TH);
+      px(MID + 2, 0, '#000000', TH);
+      for (const x of [MID - 1, MID, MID + 1]) px(x, 1, '#ffffff', TH - 2);
     });
-    canvasTex(this, 'slash', 64 * 6, 96, (c) => {
-      for (let f = 0; f < 6; f++) {
-        const ox = f * 64;
-        const len = Math.min(1, (f + 1) / 3);
-        const fade = f >= 3 ? 1 - (f - 2) / 4 : 1;
-        for (let i = 0; i < 90 * len; i++) {
-          const t = i / 90;
-          const x = ox + 52 - t * 40 + Math.sin(t * Math.PI) * 10;
-          const y = 4 + t * 88;
-          const w = Math.max(1, Math.round(Math.sin(t * Math.PI) * 7));
-          c.fillStyle = `rgba(255,${f < 2 ? 255 : 60},${f < 2 ? 255 : 60},${fade})`;
-          c.fillRect(Math.round(x), Math.round(y), w, 2);
+    // the moving bar: white with a black outline and a dark core, little tips top and bottom
+    const BAR = ['.####.', '#wwww#', '#wwww#', ...Array(56).fill('#wkkw#'), '#wwww#', '#wwww#', '.####.'];
+    gridTex(this, 'atk-bar', BAR, { '#': '#000000', w: '#ffffff', k: '#1a1a1a' });
+    // slashes: a chunky three-tone crescent that grows, flashes, then breaks into sparks (6 frames of 64x64,
+    // shown at 3x). The critical version crosses two of them into an X.
+    const S = 64;
+    const drawSlash = (c: Ctx, ox: number, f: number, flip: boolean, core: string) => {
+      const grow = [0.35, 0.7, 1, 1, 1, 1][f];
+      const thick = [0.5, 0.8, 1, 1.25, 0.7, 0][f];
+      const dot = (x: number, y: number, r: number, col: string) => {
+        c.fillStyle = col;
+        for (let yy = Math.floor(y - r); yy <= Math.ceil(y + r); yy++)
+          for (let xx = Math.floor(x - r); xx <= Math.ceil(x + r); xx++)
+            if ((xx - x) ** 2 + (yy - y) ** 2 <= r * r && xx >= 0 && xx < S && yy >= 0 && yy < S) c.fillRect(ox + (flip ? S - 1 - xx : xx), yy, 1, 1);
+      };
+      const pt = (t: number) => {
+        const x = 54 - t * 44, y = 5 + t * 54;
+        const bow = Math.sin(t * Math.PI) * 7; // bend the line into a crescent
+        return [x + bow * 0.77, y + bow * 0.64];
+      };
+      if (thick > 0) {
+        for (const [extra, col] of [[2, '#000000'], [1.2, '#ff3b3b'], [0, '#ffb347'], [-1.2, core]] as const) {
+          for (let i = 0; i <= 160 * grow; i++) {
+            const t = i / 160;
+            const r = Math.sin(t * Math.PI) ** 0.7 * 3.4 * thick + extra;
+            if (r <= 0.3) continue;
+            if (f === 4 && Math.floor(t * 12) % 3 === 1) continue; // the slash starts to break apart
+            const [x, y] = pt(t);
+            dot(x, y, r, col);
+          }
         }
       }
-    });
-    const t = this.textures.get('slash');
-    for (let f = 0; f < 6; f++) t.add(f, 0, f * 64, 0, 64, 96);
+      if (f >= 3) {
+        // sparks fly off the line
+        for (let k = 0; k < 7; k++) {
+          const t = 0.12 + k * 0.12;
+          const [x, y] = pt(t);
+          const out = (f - 2) * 4 + (k % 3) * 2;
+          const sx = x + (k % 2 ? out : -out) * 0.64, sy = y + (k % 2 ? -out : out) * 0.77;
+          dot(sx, sy, f === 5 ? 0.8 : 1.2, k % 2 ? '#ffd23f' : '#ffffff');
+        }
+      }
+    };
+    for (const [key, crit] of [['slash', false], ['slash-crit', true]] as const) {
+      canvasTex(this, key, S * 6, S, (c) => {
+        for (let f = 0; f < 6; f++) {
+          drawSlash(c, f * S, f, false, crit ? '#fff6c8' : '#ffffff');
+          if (crit) drawSlash(c, f * S, Math.max(0, f - 1), true, '#fff6c8');
+        }
+      });
+      const t = this.textures.get(key);
+      for (let f = 0; f < 6; f++) t.add(f, 0, f * S, 0, S, S);
+    }
   }
 
   private paintHp() {
@@ -266,7 +323,8 @@ export class EncounterScene extends Phaser.Scene {
       show();
       this.clicked = false;
       const tick = (_t: number, dt: number) => {
-        const t = this.boxText!;
+        const t = this.boxText;
+        if (!t) return;
         const click = this.clicked;
         this.clicked = false;
         if (shown < t.total) {
@@ -299,8 +357,10 @@ export class EncounterScene extends Phaser.Scene {
       const objs: Phaser.GameObjects.GameObject[] = [];
       let sel = 0;
       const pos = opts.map((_, i) => ({ x: BIG.x + 60 + (i % 2) * 270, y: BIG.y + 24 + Math.floor(i / 2) * 36 }));
+      // two columns of 270 px: every option must fit in its column, so long names use a smaller scale
+      const sc = Math.min(...opts.map((o) => fitScale('* ' + o.s, opts.length > 1 ? 244 : 500, 3)));
       opts.forEach((o, i) => {
-        objs.push(label(this, pos[i].x, pos[i].y, '* ' + o.s, o.c ?? 'w', 3));
+        objs.push(label(this, pos[i].x, pos[i].y + (3 - sc) * 5, '* ' + o.s, o.c ?? 'w', sc));
         const z = this.add.zone(pos[i].x - 40, pos[i].y - 6, 260, 34).setOrigin(0).setInteractive({ useHandCursor: true });
         z.on('pointerover', () => { if (sel !== i) { sel = i; audio.sfx('move'); paint(); } });
         z.on('pointerup', () => { sel = i; finish(i); });
@@ -394,7 +454,9 @@ export class EncounterScene extends Phaser.Scene {
       await this.text([`* You tried to spare ${this.e.name}.`, `* ...But it isn't ready yet. Maybe ACT first?`]);
       return this.enemyTurn();
     }
+    audio.music('');
     audio.sfx('spare');
+    this.time.delayedCall(REDUCED ? 0 : 450, () => audio.sfx('win'));
     this.tweens.add({ targets: this.enemy, alpha: 0.4, duration: 400 });
     const lines = [...this.e.spare];
     const enc = await profileEncounter();
@@ -410,25 +472,30 @@ export class EncounterScene extends Phaser.Scene {
       this.mode = 'aim';
       this.heart.setVisible(false);
       const b = BIG;
-      const target = this.add.image(320, b.y + b.h / 2, 'atk-target').setAlpha(0);
+      const target = this.add.image(320, b.y + b.h / 2, 'atk-target').setScale(2).setAlpha(0);
       this.tweens.add({ targets: target, alpha: 1, duration: REDUCED ? 1 : 120 });
-      const bar = this.add.rectangle(b.x + 18, b.y + 14, 10, b.h - 28, 0xffffff).setOrigin(0).setStrokeStyle(2, 0x000000);
+      const x0 = b.x + 22, x1 = b.x + b.w - 22;
+      const bar = this.add.image(x0, b.y + b.h / 2, 'atk-bar').setScale(2).setDepth(2);
       const crossMs = 1100;
-      let x = b.x + 18;
+      let x = x0;
       let stopped = false;
       this.clicked = false;
       const tick = (_t: number, dt: number) => {
         if (stopped) return;
-        x += ((b.w - 40) / crossMs) * dt;
-        bar.setX(x);
+        x += ((x1 - x0) / crossMs) * dt;
+        bar.setX(Math.round(x));
         const click = this.clicked;
         this.clicked = false;
-        const end = x > b.x + b.w - 24;
+        const end = x >= x1;
         if (input.consume('confirm') || click || end) {
           stopped = true;
           this.events.off('update', tick);
-          const acc = end ? 0 : 1 - Math.abs(x + 5 - 320) / (b.w / 2 - 20);
-          if (!REDUCED && !end) this.tweens.add({ targets: bar, alpha: 0.2, duration: 60, yoyo: true, repeat: 3 });
+          const acc = end ? 0 : Math.max(0, 1 - Math.abs(x - 320) / (x1 - 320));
+          // the bar flashes gold on a critical hit, white otherwise
+          if (!REDUCED && !end) {
+            const tint = acc > 0.94 ? 0xffd23f : 0x9a9a9a;
+            this.tweens.addCounter({ from: 0, to: 7, duration: 420, onUpdate: (tw) => (Math.floor(tw.getValue()!) % 2 ? bar.setTint(tint) : bar.clearTint()) });
+          }
           if (end) this.tweens.add({ targets: bar, alpha: 0, duration: 300 });
           this.time.delayedCall(REDUCED ? 0 : end ? 300 : 480, () => {
             target.destroy();
@@ -453,8 +520,17 @@ export class EncounterScene extends Phaser.Scene {
     const dmg = crit ? 2 : 1;
     // slash: 6 frames, then a tiny hit-stop, then the shake
     audio.sfx('slash');
-    const sl = this.add.sprite(320, 120, 'slash', 0).setScale(2).setDepth(10);
-    for (let f = 1; f < 6; f++) { await this.wait(55); sl.setFrame(f); }
+    const sl = this.add.sprite(320, 128, crit ? 'slash-crit' : 'slash', 0).setScale(3).setDepth(10);
+    for (let f = 1; f < 6; f++) {
+      await this.wait(f === 3 ? 70 : 50);
+      sl.setFrame(f);
+      if (f === 3 && !REDUCED) {
+        // one bright frame on the monster as the slash connects
+        this.enemy.setTintFill(0xffffff);
+        this.time.delayedCall(60, () => this.enemy.clearTint());
+      }
+    }
+    await this.wait(50);
     sl.destroy();
     audio.sfx('hit');
     this.enemy.setFrame(2);
@@ -484,8 +560,10 @@ export class EncounterScene extends Phaser.Scene {
     this.enemy.setFrame(0);
     if (this.enemyHp <= 0) {
       audio.music('');
+      audio.sfx('dust');
       this.tweens.add({ targets: this.enemy, alpha: 0, scaleY: 0.2, duration: REDUCED ? 1 : 800 });
       await this.wait(800);
+      audio.sfx('win');
       await this.text(['* YOU WON!', ...this.e.win]);
       G.s.fought.push(this.e.id);
       G.s.lv++;
@@ -503,17 +581,28 @@ export class EncounterScene extends Phaser.Scene {
     this.mode = 'busy';
     this.paintButtons();
     this.heart.setVisible(false);
+    this.boxText?.destroy();
+    this.boxText = null;
     const bub = this.e.bubbles[this.turn % this.e.bubbles.length];
-    const bw = Math.max(120, textW(bub, 2) + 24);
+    // the bubble sits to the right of the monster and wraps, so the words always stay inside it
+    const bx = Math.min(452, Math.round(this.enemy.x + this.enemy.displayWidth / 2) + 14);
+    const maxChars = Math.max(8, Math.floor((640 - 12 - bx - 24) / 12));
+    const lines = wrapWords(bub, maxChars);
+    const bw = Math.max(...lines.map((l) => textW(l, 2))) + 24;
+    const bh = lines.length * 22 + 14;
+    const by = 84 - Math.round(bh / 2);
     const bg = this.add.graphics();
-    bg.fillStyle(0xffffff).fillRoundedRect(440, 60, bw, 36, 6).fillTriangle(440, 74, 440, 86, 424, 80);
-    const bt = label(this, 452, 71, bub, 'b', 2);
+    bg.fillStyle(0xffffff).fillRoundedRect(bx, by, bw, bh, 6).fillTriangle(bx, 78, bx, 90, bx - 16, 84);
+    const bt = this.add.container(0, 0);
+    lines.forEach((l, i) => bt.add(label(this, bx + 12, by + 10 + i * 22, l, 'b', 2)));
     await this.resize(this.dbox);
     await this.wait(REDUCED ? 600 : 1000);
     bg.destroy();
     bt.destroy();
     const turns = this.e.turns;
-    this.pats = turns[Math.min(this.turn, turns.length - 1)];
+    this.pats = turns[this.turn < turns.length ? this.turn : 1 + ((this.turn - 1) % (turns.length - 1))];
+    // two patterns at once spawn less often each, so the screen never fills up
+    this.dens = 1 + 0.6 * (this.pats.length - 1);
     this.turn++;
     const b = this.dbox;
     this.hx = b.x + b.w / 2;
@@ -528,6 +617,7 @@ export class EncounterScene extends Phaser.Scene {
     if (this.pats.includes('future') && !this.fx.has('time')) this.hint = label(this, 320, 18, 'CYAN DROPS ONLY HIT A MOVING SOUL', 'c', 2, 'c');
     if (this.pats.includes('memorize')) this.hint = label(this, 320, 18, 'IT IS MEMORIZING YOUR PATH...', 'y', 2, 'c');
     if (this.pats.includes('dropout')) this.hint = label(this, 320, 18, 'STAND WHERE THE CELLS DROP OUT', 'w', 2, 'c');
+    if (this.pats.includes('shakeup') && !this.hint) this.hint = label(this, 320, 18, 'FIND THE GAP IN THE BOARD', 'w', 2, 'c');
     if (this.pats.includes('attention')) {
       this.eye = this.add.image(320, b.y - 26, 'att-eye').setScale(2).setDepth(7);
       this.hint = label(this, 320, 18, 'KEEP MOVING: IT WATCHES WHAT STAYS STILL', 'r', 2, 'c');
@@ -629,35 +719,41 @@ export class EncounterScene extends Phaser.Scene {
         return;
       }
       case 'bones': {
-        if (!cool('bones', 360 / speed)) return;
+        // a tunnel of bones: the gap follows a smooth wave, so there is always a reachable safe path
+        if (!cool('bones', (300 / speed) * this.dens)) return;
         const k = n('bones');
         if (fx.has('drop') && k % 5 === 2) return;
-        const offs = [-34, 26, -12, 36, -36, 14, -22, 30, 0, -28];
-        const gap = fx.has('reg') ? 70 : 54;
-        const cy = iy + ih / 2 + offs[k % offs.length] * (ih / 150);
-        const fromLeft = this.turn > 3 && k % 2 === 1;
+        const gap = fx.has('reg') ? 74 : 60;
+        const amp = Math.max(0, (ih - gap) / 2 - 10);
+        if (this.pt.phase === undefined) this.pt.phase = Math.random() * 6;
+        const cy = iy + ih / 2 + Math.sin(this.pt.phase + k * 0.5) * amp;
+        const fromLeft = this.turn > 3 && this.turn % 2 === 0; // one direction per turn, never both at once
         const x = fromLeft ? ix - 12 : ix + iw + 2;
-        const vx = (fromLeft ? 1 : -1) * 120 * speed;
+        const vx = (fromLeft ? 1 : -1) * 115 * speed;
         this.add2({ kind: 'bone', x, y: iy - 6, w: 10, h: cy - gap / 2 - iy + 6, vx });
         this.add2({ kind: 'bone', x, y: cy + gap / 2, w: 10, h: iy + ih - (cy + gap / 2) + 6, vx });
         return;
       }
       case 'dots': {
-        if (!cool('dots', 1500)) return;
+        if (!cool('dots', 1500 * this.dens)) return;
         const pts: [number, number][] = [];
         const m = fx.has('reg') ? 4 : 6;
         for (let k = 0; k < m; k++) pts.push([ix + 14 + (k * (iw - 28)) / (m - 1), iy + 14 + Math.random() * (ih - 28)]);
         for (const [x, y] of pts) this.add2({ kind: 'dot', x: x - 3, y: y - 3, w: 6, h: 6, life: 1.5 });
-        for (let k = 0; k < m - 1; k++) this.add2({ kind: 'seg', x: pts[k][0], y: pts[k][1], x2: pts[k + 1][0], y2: pts[k + 1][1], life: 1.5, warn: 0.75 });
+        for (let k = 0; k < m - 1; k++) this.add2({ kind: 'seg', x: pts[k][0], y: pts[k][1], x2: pts[k + 1][0], y2: pts[k + 1][1], life: 1.5, warn: 0.8 });
         return;
       }
       case 'drops':
       case 'future': {
-        const rate = (fx.has('brag') ? 105 : 150) / speed;
+        const rate = ((fx.has('brag') ? 120 : 165) / speed) * this.dens;
         if (!cool(p, rate)) return;
         const future = p === 'future' && !fx.has('time') && Math.random() < 0.6;
         const slow = fx.has('audit') ? 0.72 : 1;
-        this.add2({ kind: future ? 'future' : 'drop', x: ix + Math.random() * (iw - 8), y: iy - 10, w: 8, h: 10, vy: (future ? 100 : 55) * slow * speed, ay: (future ? 110 : 220) * slow, life: 3, still: future });
+        // never drop two in a row on top of each other: that would make a wall
+        let x = ix + Math.random() * (iw - 8);
+        if (Math.abs(x - (this.pt.lastX ?? -99)) < 18) x = ix + ((x - ix + iw / 2) % (iw - 8));
+        this.pt.lastX = x;
+        this.add2({ kind: future ? 'future' : 'drop', x, y: iy - 10, w: 8, h: 10, vy: (future ? 100 : 55) * slow * speed, ay: (future ? 110 : 220) * slow, life: 3, still: future });
         return;
       }
       case 'split': {
@@ -672,13 +768,19 @@ export class EncounterScene extends Phaser.Scene {
         return;
       }
       case 'rings': {
-        if (!cool('rings', 1000 / speed)) return;
-        const cx = ix + 24 + Math.random() * (iw - 48), cy = iy + 24 + Math.random() * (ih - 48);
+        if (!cool('rings', (1000 / speed) * this.dens)) return;
+        // never burst right on top of the SOUL
+        let cx = 0, cy = 0;
+        for (let tries = 0; tries < 12; tries++) {
+          cx = ix + 24 + Math.random() * (iw - 48);
+          cy = iy + 24 + Math.random() * (ih - 48);
+          if (Math.hypot(cx - this.hx, cy - this.hy) > 70) break;
+        }
         const k = this.turn > 2 ? 12 : 10;
         const spin = fx.has('mom') ? 0.9 : 0;
         for (let i = 0; i < k; i++) {
           const a = (i / k) * Math.PI * 2 + n('rings');
-          this.add2({ kind: 'pellet', x: cx - 4, y: cy - 4, vx: Math.cos(a), vy: Math.sin(a), life: 3.2, warn: 0.55, data: [a, spin] });
+          this.add2({ kind: 'pellet', x: cx - 4, y: cy - 4, vx: Math.cos(a), vy: Math.sin(a), life: 3.2, warn: 0.6, data: [a, spin] });
         }
         return;
       }
@@ -696,56 +798,68 @@ export class EncounterScene extends Phaser.Scene {
         return;
       }
       case 'beams': {
-        if (!cool('beams', 760 / speed)) return;
+        if (!cool('beams', (800 / speed) * this.dens)) return;
         const vertical = n('beams') % 2 === 0;
         const pos = vertical ? Phaser.Math.Clamp(this.hx - 12 + Math.random() * 24, ix + 10, ix + iw - 10) : Phaser.Math.Clamp(this.hy - 12 + Math.random() * 24, iy + 10, iy + ih - 10);
         const wdt = fx.has('lr') ? 14 : 22;
-        const warn = fx.has('lr') ? 0.8 : 0.6;
+        const warn = fx.has('lr') ? 0.8 : 0.65;
         this.add2(vertical
           ? { kind: 'beam', x: pos - wdt / 2, y: iy - 4, w: wdt, h: ih + 8, life: warn + 0.4, warn }
           : { kind: 'beam', x: ix - 4, y: pos - wdt / 2, w: iw + 8, h: wdt, life: warn + 0.4, warn });
         return;
       }
       case 'rankrain': {
-        if (!cool('rank', (fx.has('cv') ? 230 : 150) / speed)) return;
+        if (!cool('rank', ((fx.has('cv') ? 240 : 165) / speed) * this.dens)) return;
         const t = this.add.bitmapText(0, 0, 'px-' + (fx.has('noise') ? 'g' : 'w'), '#' + (1 + Math.floor(Math.random() * 9))).setScale(2);
         t.setMask(this.mask);
-        this.add2({ kind: 'rank', x: ix + Math.random() * (iw - 22), y: iy - 16, w: 22, h: 14, vy: (fx.has('cv') ? 55 : 80) * speed, ay: 60, life: 3.4, txt: t });
+        let x = ix + Math.random() * (iw - 22);
+        if (Math.abs(x - (this.pt.lastX ?? -99)) < 26) x = ix + ((x - ix + iw / 2) % (iw - 22));
+        this.pt.lastX = x;
+        this.add2({ kind: 'rank', x, y: iy - 16, w: 22, h: 14, vy: (fx.has('cv') ? 55 : 80) * speed, ay: 60, life: 3.4, txt: t });
         return;
       }
       case 'shakeup': {
-        // rows of the board slide across from alternating sides, one gap per row
-        if (!cool('shake', 900 / speed)) return;
-        const k = n('shake');
+        // rows of the board slide across, all from one side per turn, with one gap row per wave.
+        // The next wave only comes once the last has fully passed, and its gap is at most one row away.
         const rows = 4;
-        const gapRow = Math.floor(Math.random() * rows);
-        const fromLeft = k % 2 === 0;
         const rh = (ih - 8) / rows;
+        const fromLeft = this.turn % 2 === 0;
+        const vx = 150 * speed;
+        const len = iw * 0.6;
+        const passMs = ((len + 14) / vx) * 1000 + 900;
+        if (!cool('shake', Math.max(900 / speed, passMs) * this.dens)) return;
+        let gapRow = Math.floor(Math.random() * rows);
+        if (this.pt.gapRow !== undefined) gapRow = Phaser.Math.Clamp(this.pt.gapRow + (Math.random() < 0.5 ? -1 : 1), 0, rows - 1);
+        this.pt.gapRow = gapRow;
         for (let r = 0; r < rows; r++) {
           if (r === gapRow || (fx.has('noise') && r === (gapRow + 2) % rows)) continue;
-          this.add2({ kind: 'bar', x: fromLeft ? ix - iw * 0.6 : ix + iw, y: iy + 4 + r * rh + 3, w: iw * 0.6, h: rh - 6, vx: (fromLeft ? 1 : -1) * 150 * speed, life: 3, warn: 0.45 });
+          this.add2({ kind: 'bar', x: fromLeft ? ix - len : ix + iw, y: iy + 4 + r * rh + 3, w: len, h: rh - 6, vx: (fromLeft ? 1 : -1) * vx, life: 4.4, warn: 0.8 });
         }
         return;
       }
       case 'dropout': {
-        // a grid of pellets; some cells drop out (safe), the rest switch on for a moment
-        if (!cool('drop', 1800 / speed)) return;
+        // a grid of cells; some drop out (safe), the rest switch on for a moment.
+        // There is always a safe cell within easy reach of the SOUL.
+        if (!cool('drop', (1800 / speed) * this.dens)) return;
         const cell = 24;
         const keep = fx.has('cheer') ? 0.45 : 0.6;
+        const cells: { x: number; y: number; on: boolean }[] = [];
         for (let y = iy + 2; y < iy + ih - cell + 4; y += cell)
-          for (let x = ix + 2; x < ix + iw - cell + 4; x += cell)
-            if (Math.random() < keep) this.add2({ kind: 'cell', x, y, w: cell - 4, h: cell - 4, life: 1.6, warn: 0.85 });
+          for (let x = ix + 2; x < ix + iw - cell + 4; x += cell) cells.push({ x, y, on: Math.random() < keep });
+        const d = (c: { x: number; y: number }) => Math.hypot(c.x + cell / 2 - this.hx, c.y + cell / 2 - this.hy);
+        if (!cells.some((c) => !c.on && d(c) < 70)) cells.reduce((a, c) => (d(c) < d(a) ? c : a)).on = false;
+        for (const c of cells) if (c.on) this.add2({ kind: 'cell', x: c.x, y: c.y, w: cell - 4, h: cell - 4, life: 1.6, warn: 0.85 });
         return;
       }
       case 'attention': {
         // an eye locks onto a SOUL that stays still too long, then fires
-        const lock = fx.has('cv') ? 1.0 : 0.7;
+        const lock = fx.has('cv') ? 1.2 : 0.9;
         if (this.eye) this.eye.setX(Phaser.Math.Linear(this.eye.x, this.hx, 0.08));
         if (this.stillT > lock && cool('att', 900)) {
           this.stillT = 0;
-          this.add2({ kind: 'beam', x: this.hx - 9, y: iy - 4, w: 18, h: ih + 8, life: 0.95, warn: 0.5 });
+          this.add2({ kind: 'beam', x: this.hx - 9, y: iy - 4, w: 18, h: ih + 8, life: 1.05, warn: 0.55 });
         }
-        if (cool('attp', 700 / speed)) this.add2({ kind: 'pellet', x: ix + Math.random() * iw, y: iy, vx: (Math.random() - 0.5) * 0.4, vy: 1, life: 3, data: [0, 0] });
+        if (cool('attp', (800 / speed) * this.dens)) this.add2({ kind: 'pellet', x: ix + Math.random() * iw, y: iy, vx: (Math.random() - 0.5) * 0.4, vy: 1, life: 3, data: [0, 0] });
         return;
       }
     }
@@ -934,6 +1048,18 @@ export class EncounterScene extends Phaser.Scene {
         break;
     }
   }
+}
+
+/** Word-wrap plain text to lines of at most `max` characters. */
+function wrapWords(s: string, max: number): string[] {
+  const out: string[] = [];
+  let cur = '';
+  for (const w of s.split(' ')) {
+    if (cur && (cur + ' ' + w).length > max) { out.push(cur); cur = w; }
+    else cur = cur ? cur + ' ' + w : w;
+  }
+  if (cur) out.push(cur);
+  return out;
 }
 
 function distToSeg(px: number, py: number, x1: number, y1: number, x2: number, y2: number) {

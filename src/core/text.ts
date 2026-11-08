@@ -137,6 +137,26 @@ export class PixelText extends Phaser.GameObjects.Container {
 /** Width in px of a plain string at a given scale. */
 export const textW = (s: string, scale = 1) => Math.max(0, clean(s).length * ADV - 1) * scale;
 
+/** The largest scale (down to `min`) at which `s` fits in `maxW` px. */
+export function fitScale(s: string, maxW: number, scale: number, min = 2) {
+  let sc = scale;
+  while (sc > min && textW(s, sc) > maxW) sc--;
+  return sc;
+}
+/** Shorten `s` with ".." until it fits in `maxW` px at `scale` (last resort; prefer a smaller scale). */
+export function fitText(s: string, maxW: number, scale: number) {
+  if (textW(s, scale) <= maxW) return s;
+  let t = clean(s);
+  while (t.length > 2 && textW(t + '..', scale) > maxW) t = t.slice(0, -1);
+  return t.trimEnd() + '..';
+}
+/** A label that never spills out of `maxW`: shrinks the scale first, then shortens the text. */
+export function fitLabel(scene: Phaser.Scene, x: number, y: number, s: string, maxW: number, color = 'w', scale = 3, align: 'l' | 'c' | 'r' = 'l', min = 2) {
+  const sc = fitScale(s, maxW, scale, min);
+  const bt = label(scene, x, y + Math.round(((scale - sc) * 10) / 2), fitText(s, maxW, sc), color, sc, align);
+  return bt;
+}
+
 /** Quick single-line label (no tags). */
 export function label(scene: Phaser.Scene, x: number, y: number, s: string, color = 'w', scale = 1, align: 'l' | 'c' | 'r' = 'l') {
   const bt = scene.add.bitmapText(x, y, 'px-' + color, clean(s)).setScale(scale);

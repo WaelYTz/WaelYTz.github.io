@@ -1,7 +1,7 @@
 // Runtime game state (the save file in memory) + progress helpers shared by all scenes.
 import { freshSave, loadSave, writeSave, type SaveData } from './save';
 
-export const MAIN_ROOMS = ['start', 'hall', 'crossroads', 'memorial', 'ruins1', 'ruins2', 'ruins3', 'lab', 'town', 'shop', 'library', 'records', 'mirror', 'summit', 'exit'];
+export const MAIN_ROOMS = ['start', 'hall', 'crossroads', 'memorial', 'ruins1', 'ruins2', 'ruins3', 'lab', 'town', 'shop', 'house', 'hallway', 'library', 'records', 'garden', 'summit', 'exit'];
 export const ENCOUNTERS = ['overfit', 'leakage', 'gradient'];
 export const SECRETS: Record<string, string> = {
   konami: 'The old code',

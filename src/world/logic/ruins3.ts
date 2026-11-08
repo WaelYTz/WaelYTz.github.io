@@ -61,12 +61,17 @@ const logic: RoomLogic = {
     const lr = (G.flag('lr') as number | undefined) ?? 1;
     st = {
       ball, lever, lr, rolling: false, stepT: 0, u: 0, v: 0, prev: { ...w.player },
-      readout: label(s, CX, BY - 10, 'LOSS  -.--', 'w', 1, 'c').setDepth(-2),
+      readout: label(s, CX, BY + BH + 4, 'LOSS  -.--', 'w', 1, 'c').setDepth(-2),
       lrText: label(s, lever.tx * TILE + 8, lever.ty * TILE - 12, `LR ${LRS[lr]}`, 'y', 1, 'c').setDepth(9000),
       trail: [], steps: 0,
     };
     (lever.sprite as Phaser.GameObjects.Sprite).setFrame(lr === 0 ? 0 : 1);
-    label(s, BX + 4, BY + BH + 4, 'loss landscape', 'g', 1).setDepth(-2);
+    if (G.flag('bowl')) {
+      // solved before: the ball is still resting at the minimum
+      ball.data.x = CX + MU * RX;
+      ball.data.y = CY + MV * RY;
+      st.readout.setText('LOSS  0.00');
+    }
   },
 
   update(w, dtMs) {
@@ -164,14 +169,18 @@ async function step(w: WorldApi) {
     st.rolling = false;
     st.ball.data.x = CX + MU * RX;
     st.ball.data.y = CY + MV * RY;
-    audio.sfx('save');
+    st.readout.setText('LOSS  0.00');
+    const first = !G.flag('bowl');
+    G.setFlag('bowl');
+    audio.sfx(first ? 'solve' : 'save');
     w.freeze(true);
-    await w.say([`* The ball settled at the minimum after ${st.steps} steps.`,
-      '* That is {y}gradient descent{w}: look at the slope, take a step downhill, repeat.',
-      '* The same loop trains the linear regression in ML Algorithms From Scratch.']);
+    await w.say(first
+      ? [`* The ball settled at the minimum after ${st.steps} steps.`,
+        '* That is {y}gradient descent{w}: look at the slope, take a step downhill, repeat.',
+        '* The same loop trains the linear regression in ML Algorithms From Scratch.',
+        '* (The ball will stay here. Push it out any time to watch it roll back.)']
+      : [`* Back to the minimum, in ${st.steps} steps.`]);
     w.freeze(false);
-    // roll it back out after a moment so it can be pushed again
-    resetBall();
   } else if (st.steps > 80) {
     st.rolling = false;
     resetBall();
@@ -179,7 +188,7 @@ async function step(w: WorldApi) {
 }
 
 function resetBall() {
-  st.ball.data.x = 6 * TILE + 8;
+  st.ball.data.x = 7 * TILE;
   st.ball.data.y = 14 * TILE + 8;
   st.rolling = false;
   st.readout.setText('LOSS  -.--');

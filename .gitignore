@@ -2,3 +2,5 @@ node_modules/
 dist/
 shots/
 *.log
+# local one-off test and debug scripts
+scripts/_*

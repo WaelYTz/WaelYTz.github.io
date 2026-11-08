@@ -1,4 +1,4 @@
-// The Mirror's brain: fuzzy matching over a local knowledge base. No network, no LLM.
+// WAEL's brain (in the game): fuzzy matching over a local knowledge base. No network, no LLM.
 // To plug a real model in later, implement `MirrorProvider` (e.g. a fetch to your own endpoint) and pass it to the mirror logic.
 import Fuse from 'fuse.js';
 import { KB, STARTERS, type KBEntry } from '../../content/kb';
@@ -19,6 +19,11 @@ export class LocalKB implements MirrorProvider {
 
   /** Hybrid match: exact phrase/keyword hits first (longest wins), then fuzzy on the whole question, then per word. */
   match(question: string): KBEntry | null {
+    return this.exact(question) ?? this.fuzzy(question);
+  }
+
+  /** An entry whose phrase appears word for word in the question (the longest phrase wins). */
+  exact(question: string): KBEntry | null {
     const q = norm(question);
     if (q.trim().length < 2) return null;
     let best: KBEntry | null = null;
@@ -31,7 +36,13 @@ export class LocalKB implements MirrorProvider {
           bestLen = nv.length;
         }
       }
-    if (best) return best;
+    return best;
+  }
+
+  /** Typo-tolerant search over the whole question, then word by word. */
+  fuzzy(question: string): KBEntry | null {
+    const q = norm(question);
+    if (q.trim().length < 2) return null;
     const r = this.fuse.search(q.trim())[0];
     if (r && (r.score ?? 1) <= 0.42) return r.item;
     let tok: { e: KBEntry; s: number } | null = null;
@@ -43,10 +54,13 @@ export class LocalKB implements MirrorProvider {
   }
 
   async ask(question: string): Promise<Reply> {
-    const e = this.match(question);
+    return this.reply(this.match(question));
+  }
+
+  reply(e: KBEntry | null): Reply {
     if (!e) {
       return {
-        lines: ["The mirror doesn't know that... yet.", 'Try asking about my projects, my stack, competitions, or how to reach me.'],
+        lines: ["Hm. I don't have a good answer for that one yet.", 'Ask me about my projects, the tools I use, Kaggle, or how to reach me.'],
         followups: this.starters(), source: 'fallback',
       };
     }

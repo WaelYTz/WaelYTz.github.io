@@ -3,7 +3,7 @@
 import Phaser from 'phaser';
 import { input } from '../core/input';
 import { audio, type Voice } from '../core/audio';
-import { PixelText, parseRich, wrap, label, textW, LINE_H, type Glyph } from '../core/text';
+import { PixelText, parseRich, wrap, label, textW, fitText, fitLabel, LINE_H, type Glyph } from '../core/text';
 import { srSay } from '../shell/shell';
 import { game as G } from '../core/state';
 import { fmtTime, loadSettings } from '../core/save';
@@ -177,7 +177,8 @@ export class UIScene extends Phaser.Scene {
     const opts = d.options!;
     const textRows = d.text?.rows ?? 0;
     const totalLen = opts.reduce((a, o) => a + o.length + 4, 0);
-    const inline = !d.vertical && opts.length <= 4 && totalLen <= COLS && textRows <= LINES - 1;
+    const slotW = (BOX.w - 56) / opts.length;
+    const inline = !d.vertical && opts.length <= 4 && totalLen <= COLS && textRows <= LINES - 1 && opts.every((o) => textW(o, S) + 40 <= slotW);
     const sc = S;
     if (inline) {
       // a row of options on the last line of the box, like a classic Yes/No prompt
@@ -207,7 +208,7 @@ export class UIScene extends Phaser.Scene {
       opts.forEach((o, i) => {
         const ty = y + 18 + i * rowH;
         d.optPos.push({ x: x + 22, y: ty + 3 });
-        const t = label(this, x + 56, ty, o, 'w', 3);
+        const t = fitLabel(this, x + 56, ty, o, w - 80, 'w', 3);
         const z = this.add.zone(x, ty - 4, w, rowH).setOrigin(0).setInteractive({ useHandCursor: true });
         z.on('pointerover', () => this.setSel(i));
         z.on('pointerup', () => this.choose(i));
@@ -326,13 +327,22 @@ export class UIScene extends Phaser.Scene {
   list(items: string[], o: ListOpts = {}): Promise<number> {
     this.modal++;
     input.clearFrame();
-    const sc = o.scale ?? 3;
+    // Every row must fit inside the box: grow the box (sliding it left if needed), then shrink the text, then shorten it.
+    let sc = o.scale ?? 3;
+    const widest = (s: number) => Math.max(textW(o.title ?? '', s) - 10 * s, ...items.map((t) => textW(t, s)));
+    const pad = (s: number) => 26 + 10 * s + 34; // heart column + right margin (scroll arrows)
+    const maxBoxW = W - 64;
+    let w = o.w ?? widest(sc) + pad(sc);
+    if (widest(sc) + pad(sc) > w) w = Math.min(maxBoxW, widest(sc) + pad(sc));
+    while (sc > 2 && widest(sc) + pad(sc) > w) sc--;
+    const textMax = w - pad(sc);
+    items = items.map((t) => fitText(t, textMax, sc));
     const rowH = LINE_H * sc + (sc === 3 ? 6 : 4);
     const rows = Math.min(items.length, o.rows ?? 8);
-    const w = o.w ?? Math.max(...items.map((s) => textW(s, sc))) + 90;
     const titleH = o.title ? rowH : 0;
     const h = rows * rowH + 30 + titleH;
-    const x = o.x ?? (W - w) / 2;
+    let x = o.x ?? (W - w) / 2;
+    if (x + w > W - 32) x = Math.max(32, W - 32 - w);
     const y = o.y ?? (H - h) / 2;
     const c = this.add.container(0, 0).setDepth(20);
     const g = this.add.graphics();
@@ -415,11 +425,22 @@ export class UIScene extends Phaser.Scene {
     }
     this.toastOn = true;
     const sc = 2;
-    const w = Math.min(W - 40, textW(text, sc) + 40);
+    // long toasts wrap onto a second line instead of running off the box
+    const maxW = W - 80;
+    let lines = [text];
+    if (textW(text, sc) > maxW) {
+      const words = text.split(' ');
+      let cut = words.length - 1;
+      while (cut > 1 && textW(words.slice(0, cut).join(' '), sc) > maxW) cut--;
+      lines = [words.slice(0, cut).join(' '), fitText(words.slice(cut).join(' '), maxW, sc)];
+    }
+    const w = Math.min(W - 40, Math.max(...lines.map((l) => textW(l, sc))) + 40);
+    const bh = 24 + lines.length * 20;
     const c = this.add.container(W / 2 - w / 2, -60).setDepth(30);
     const g = this.add.graphics();
-    drawBox(g, 0, 0, w, 44, 4, 0xffff00);
-    c.add([g, label(this, w / 2, 15, text, 'y', sc, 'c')]);
+    drawBox(g, 0, 0, w, bh, 4, 0xffff00);
+    c.add(g);
+    lines.forEach((l, i) => c.add(label(this, w / 2, 15 + i * 20, l, 'y', sc, 'c')));
     const show = REDUCED ? 0 : 220;
     c.y = REDUCED ? 10 : -60;
     this.tweens.add({ targets: c, y: 10, duration: show });
@@ -468,7 +489,7 @@ export class UIScene extends Phaser.Scene {
       label(this, x + 28, y + 26, G.name.slice(0, 8), col, 3),
       label(this, x + w / 2 + 10, y + 26, lv, col, 3, 'c'),
       label(this, x + w - 28, y + 26, time, col, 3, 'r'),
-      label(this, x + 28, y + 72, roomName, col, 3),
+      fitLabel(this, x + 28, y + 72, roomName, w - 56, col, 3),
     ];
     const white = rows('w');
     c.add(white);

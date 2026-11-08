@@ -6,6 +6,17 @@ Wael's portfolio: a small explorable pixel-art underground. Every room is a proj
 - **No time? Résumé:** https://waelytz.github.io/resume/ (static, printable, works without JS)
 - **For tools:** `/llms.txt`, `/profile.json`
 
+## Controls
+| Action | Keyboard | Touch / mouse |
+|---|---|---|
+| Move | Arrow keys or WASD | On-screen D-pad, or click / tap where to walk |
+| Talk, confirm | Z, Enter or Space | On-screen Z button, or tap |
+| Back, cancel | X, Shift or Esc | On-screen X button |
+| Menu (items, wear, map, options) | C or Ctrl | On-screen C button |
+| Mute | M | Music button, top right |
+
+In a fight, press Z when the moving bar is over the gold strip for a critical hit, and dodge with the movement keys.
+
 ## Stack
 Vite + TypeScript + Phaser 3. All sprites, tiles and fonts are drawn from code at runtime; all music and sound is synthesized with WebAudio. No image or audio files, no API keys, no paid services. Original art and writing, inspired by classic top-down RPGs.
 
